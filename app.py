@@ -1,569 +1,751 @@
-import pandas as pd
+"""TechLogistics S.A. — Consultoría de Datos (Challenge 02).
+
+Aplicación de Streamlit que ejecuta el pipeline completo solicitado por el
+consultor senior:
+
+    Fase 1 - Auditoría de calidad (Health Score antes / después + reporte
+              descargable de decisiones de limpieza).
+    Fase 2 - Integración (merge estratégico) y Feature Engineering.
+    Fase 3 - Inteligencia Artificial con Groq (Llama-3) para recomendaciones
+              estratégicas en tiempo real, sobre los datos ya filtrados.
+
+Autor: Consultor de Datos — EAFIT, Fundamentos en Ciencia de Datos, 2026-1
+"""
+
+from __future__ import annotations
+
+import io
+import os
+from datetime import datetime
+from typing import Optional
+
 import numpy as np
-import streamlit as st
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from pathlib import Path
+import streamlit as st
 
-st.set_page_config(page_title="Dashboard Logístico & Rentabilidad", layout="wide", page_icon="📦")
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:  # el módulo de IA se deshabilita si no está instalado
+    GROQ_AVAILABLE = False
 
-DATA_DIR = Path(__file__).parent / "data"
+st.set_page_config(
+    page_title="TechLogistics S.A. — Consultoría de Datos",
+    layout="wide",
+    page_icon="📦",
+)
 
-# ----------------------------------------------------------------------------
-# CARGA Y LIMPIEZA DE DATOS
-# ----------------------------------------------------------------------------
+DATA_DIR = "data"
+DEFAULT_FILES = {
+    "inventario": os.path.join(DATA_DIR, "inventario_central_v2.csv"),
+    "transacciones": os.path.join(DATA_DIR, "transacciones_logistica_v2.csv"),
+    "feedback": os.path.join(DATA_DIR, "feedback_clientes_v2.csv"),
+}
 
-@st.cache_data
-def load_and_clean():
-    t = pd.read_csv(DATA_DIR / "transacciones_logistica_v2.csv")
-    f = pd.read_csv(DATA_DIR / "feedback_clientes_v2.csv")
-    inv = pd.read_csv(DATA_DIR / "inventario_central_v2.csv")
+# =============================================================================
+# 0. UTILIDADES GENÉRICAS DE CALIDAD DE DATOS
+# =============================================================================
 
-    issues = []
 
-    # ---------- TRANSACCIONES ----------
-    t_raw_n = len(t)
+def null_report(df: pd.DataFrame) -> pd.Series:
+    """Calcula el porcentaje de nulidad por columna."""
+    return (df.isnull().mean() * 100).round(2).sort_values(ascending=False)
 
-    # Normalizar ciudades (MED->Medellín, BOG->Bogotá, "Ventas_Web" no es ciudad -> canal mal cargado)
-    ciudad_map = {"MED": "Medellín", "BOG": "Bogotá"}
-    t["Ciudad_Destino_Original"] = t["Ciudad_Destino"]
-    t["Ciudad_Destino"] = t["Ciudad_Destino"].replace(ciudad_map)
-    # "Ventas_Web" filtrado a "Desconocida" (dato corrupto, no es ciudad real)
-    mask_bad_city = t["Ciudad_Destino"] == "Ventas_Web"
-    n_bad_city = mask_bad_city.sum()
-    t.loc[mask_bad_city, "Ciudad_Destino"] = "Desconocida"
-    if n_bad_city:
-        issues.append(f"{n_bad_city} filas con 'Ciudad_Destino' inválido ('Ventas_Web') → reclasificadas como 'Desconocida'.")
 
-    # Cantidad_Vendida negativa -> probable devolución/error de captura. Se toma valor absoluto para no perder el registro,
-    # pero se marca para trazabilidad.
-    mask_neg_qty = t["Cantidad_Vendida"] < 0
-    n_neg_qty = mask_neg_qty.sum()
-    t["Cantidad_Vendida_Flag"] = np.where(mask_neg_qty, "Corregida (negativa)", "OK")
-    t["Cantidad_Vendida"] = t["Cantidad_Vendida"].abs()
-    if n_neg_qty:
-        issues.append(f"{n_neg_qty} filas con 'Cantidad_Vendida' negativa → convertidas a valor absoluto.")
+def count_duplicates(df: pd.DataFrame) -> int:
+    """Cuenta filas exactamente duplicadas."""
+    return int(df.duplicated().sum())
 
-    # Tiempo_Entrega_Real = 999 es un sentinel de dato faltante/atípico (envíos perdidos), se excluye de promedios pero se conserva la fila
-    mask_sentinel = t["Tiempo_Entrega_Real"] >= 999
-    n_sentinel = mask_sentinel.sum()
-    t["Tiempo_Entrega_Valido"] = np.where(mask_sentinel, np.nan, t["Tiempo_Entrega_Real"])
-    if n_sentinel:
-        issues.append(f"{n_sentinel} filas con 'Tiempo_Entrega_Real' = 999 (sentinel de envío perdido) → excluidas de cálculos de tiempo promedio.")
 
-    # Costo_Envio nulo -> se asume 0 solo si el estado es 'Perdido' (no se despachó); en otros casos se imputa con mediana por ciudad
-    med_envio_ciudad = t.groupby("Ciudad_Destino")["Costo_Envio"].median()
-    t["Costo_Envio_Imputado"] = t["Costo_Envio"].isna()
-    def fill_envio(row):
-        if pd.notna(row["Costo_Envio"]):
-            return row["Costo_Envio"]
-        if row["Estado_Envio"] == "Perdido":
-            return 0.0
-        return med_envio_ciudad.get(row["Ciudad_Destino"], t["Costo_Envio"].median())
-    t["Costo_Envio"] = t.apply(fill_envio, axis=1)
-    n_envio_na = t["Costo_Envio_Imputado"].sum()
-    if n_envio_na:
-        issues.append(f"{n_envio_na} filas con 'Costo_Envio' vacío → imputadas (0 si 'Perdido', si no mediana de la ciudad).")
+def detect_outliers_iqr(series: pd.Series) -> pd.Series:
+    """Máscara booleana de outliers según el criterio de Tukey (rango IQR)."""
+    numeric = pd.to_numeric(series, errors="coerce")
+    q1, q3 = numeric.quantile(0.25), numeric.quantile(0.75)
+    iqr = q3 - q1
+    lower, upper = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+    return (numeric < lower) | (numeric > upper)
 
-    # Estado_Envio nulo -> "Desconocido"
-    n_estado_na = t["Estado_Envio"].isna().sum()
-    t["Estado_Envio"] = t["Estado_Envio"].fillna("Desconocido")
-    if n_estado_na:
-        issues.append(f"{n_estado_na} filas con 'Estado_Envio' vacío → etiquetadas como 'Desconocido'.")
 
-    # Fecha
-    t["Fecha_Venta"] = pd.to_datetime(t["Fecha_Venta"], format="%d/%m/%Y", errors="coerce")
+def health_score(df: pd.DataFrame, numeric_cols: Optional[list] = None) -> float:
+    """Health Score (0-100) del dataset.
 
-    t["Ingreso_Total"] = t["Cantidad_Vendida"] * t["Precio_Venta_Final"]
+    Penaliza nulidad, duplicados y proporción de outliers en las columnas
+    numéricas relevantes. Ninguno de los tres factores domina el resultado.
+    """
+    null_pct = df.isnull().mean().mean() * 100
+    dup_pct = (df.duplicated().sum() / max(len(df), 1)) * 100
 
-    # ---------- INVENTARIO ----------
-    i_raw_n = len(inv)
+    outlier_pct = 0.0
+    if numeric_cols:
+        flags = [
+            detect_outliers_iqr(df[col]).mean() * 100
+            for col in numeric_cols
+            if col in df.columns
+        ]
+        if flags:
+            outlier_pct = float(np.mean(flags))
 
-    # Categoria: normalizar mayúsculas/variantes y "???" como Desconocida
-    cat_map = {
-        "smart-phone": "Smartphones", "Smartphones": "Smartphones",
-        "LAPTOP": "Laptops", "Laptops": "Laptops",
-        "Accesorios": "Accesorios", "Monitores": "Monitores", "Tablets": "Tablets",
-        "???": "Desconocida",
-    }
-    n_cat_bad = (inv["Categoria"] == "???").sum()
-    inv["Categoria"] = inv["Categoria"].map(cat_map).fillna(inv["Categoria"])
-    if n_cat_bad:
-        issues.append(f"{n_cat_bad} filas de inventario con 'Categoria' = '???' → etiquetadas como 'Desconocida'.")
-    issues.append("Categorías normalizadas ('smart-phone'/'Smartphones' → 'Smartphones'; 'LAPTOP'/'Laptops' → 'Laptops').")
+    score = 100 - (null_pct * 0.4) - (dup_pct * 0.4) - (outlier_pct * 0.2)
+    return round(max(0.0, min(100.0, score)), 2)
 
-    # Bodega_Origen: normalizar capitalización, ZONA_FRANCA y BOD-EXT-99 son bodegas externas/tercerizadas válidas
-    inv["Bodega_Origen"] = inv["Bodega_Origen"].replace({"norte": "Norte"})
-    issues.append("Bodega 'norte' (minúscula) unificada con 'Norte'.")
 
-    # Stock_Actual negativo (inconsistencia de sistema) -> se trata como 0 (sin stock real) y se marca
-    mask_neg_stock = inv["Stock_Actual"] < 0
-    n_neg_stock = mask_neg_stock.sum()
-    inv["Stock_Flag"] = np.where(mask_neg_stock, "Corregido (negativo)", "OK")
-    inv["Stock_Actual"] = inv["Stock_Actual"].clip(lower=0)
-    if n_neg_stock:
-        issues.append(f"{n_neg_stock} filas de inventario con 'Stock_Actual' negativo → ajustadas a 0.")
+# =============================================================================
+# 1. CARGA DE DATOS (con manejo de excepciones)
+# =============================================================================
 
-    # Stock_Actual nulo -> imputado con mediana de la categoría
-    n_stock_na = inv["Stock_Actual"].isna().sum()
-    med_stock_cat = inv.groupby("Categoria")["Stock_Actual"].median()
-    inv["Stock_Actual"] = inv.apply(
-        lambda r: med_stock_cat.get(r["Categoria"], inv["Stock_Actual"].median()) if pd.isna(r["Stock_Actual"]) else r["Stock_Actual"],
-        axis=1,
-    )
-    if n_stock_na:
-        issues.append(f"{n_stock_na} filas de inventario con 'Stock_Actual' vacío → imputadas con la mediana de su categoría.")
 
-    # Lead_Time_Dias: texto inconsistente ("25-30 días", "Inmediato", números, nulos)
-    def parse_lead_time(v):
-        if pd.isna(v):
-            return np.nan
-        v = str(v).strip()
-        if v.lower() == "inmediato":
-            return 0
-        if "-" in v:
-            parts = [p for p in v.replace("días", "").replace("dias", "").split("-")]
-            try:
-                nums = [float(p.strip()) for p in parts]
-                return sum(nums) / len(nums)
-            except ValueError:
-                return np.nan
+@st.cache_data(show_spinner=False)
+def read_csv_safe(path_or_buffer, nombre: str) -> Optional[pd.DataFrame]:
+    """Lee un CSV controlando errores comunes de formato/codificación."""
+    try:
+        return pd.read_csv(path_or_buffer)
+    except FileNotFoundError:
+        st.error(f"No se encontró el archivo de **{nombre}**. Verifica la ruta o súbelo "
+                 f"manualmente en la barra lateral.")
+    except pd.errors.EmptyDataError:
+        st.error(f"El archivo de **{nombre}** está vacío.")
+    except pd.errors.ParserError as exc:
+        st.error(f"El archivo de **{nombre}** no se pudo interpretar como CSV: {exc}")
+    except UnicodeDecodeError:
+        st.error(f"Problema de codificación al leer **{nombre}**. Intenta guardarlo en UTF-8.")
+    except Exception as exc:  # último recurso: no tumbar la app por un error inesperado
+        st.error(f"Error inesperado leyendo **{nombre}**: {exc}")
+    return None
+
+
+def cargar_datasets():
+    """Resuelve la fuente de cada dataset: archivo subido > archivo en /data."""
+    st.sidebar.header("📁 Fuente de datos")
+    subir = st.sidebar.checkbox("Subir mis propios CSV", value=False)
+
+    fuentes = {}
+    if subir:
+        fuentes["inventario"] = st.sidebar.file_uploader("Inventario", type="csv")
+        fuentes["transacciones"] = st.sidebar.file_uploader("Transacciones", type="csv")
+        fuentes["feedback"] = st.sidebar.file_uploader("Feedback", type="csv")
+    else:
+        fuentes = {k: v for k, v in DEFAULT_FILES.items()}
+
+    inv = read_csv_safe(fuentes.get("inventario"), "Inventario") if fuentes.get("inventario") else None
+    trans = read_csv_safe(fuentes.get("transacciones"), "Transacciones") if fuentes.get("transacciones") else None
+    fb = read_csv_safe(fuentes.get("feedback"), "Feedback") if fuentes.get("feedback") else None
+    return inv, trans, fb
+
+
+# =============================================================================
+# 2. LIMPIEZA — INVENTARIO CENTRAL
+# =============================================================================
+
+MAPA_CATEGORIAS = {
+    "smart-phone": "Smartphones",
+    "smartphones": "Smartphones",
+    "laptop": "Laptops",
+    "laptops": "Laptops",
+    "monitores": "Monitores",
+    "accesorios": "Accesorios",
+    "tablets": "Tablets",
+    "???": "Sin Categoría",
+}
+
+MAPA_BODEGAS = {
+    "norte": "Norte",
+    "sur": "Sur",
+    "occidente": "Occidente",
+    "zona_franca": "Zona Franca",
+    "bod-ext-99": "Bodega Externa (Terceros)",
+}
+
+
+def parsear_lead_time(valor) -> float:
+    """Convierte Lead_Time_Dias (texto heterogéneo) a un número de días.
+
+    Reglas de negocio:
+      - "Inmediato"        -> 0 días.
+      - "25-30 días"       -> punto medio del rango (27.5).
+      - cadena numérica     -> el número tal cual.
+      - vacío / no parseable -> NaN (se imputa después).
+    """
+    if pd.isna(valor):
+        return np.nan
+    texto = str(valor).strip().lower()
+    if texto in ("inmediato", "inmediata"):
+        return 0.0
+    if "-" in texto:
+        partes = texto.replace("días", "").replace("dias", "").strip().split("-")
         try:
-            return float(v)
+            numeros = [float(p.strip()) for p in partes]
+            return float(np.mean(numeros))
         except ValueError:
             return np.nan
-    inv["Lead_Time_Dias_Num"] = inv["Lead_Time_Dias"].apply(parse_lead_time)
-    n_lt_na = inv["Lead_Time_Dias"].isna().sum()
-    if n_lt_na:
-        issues.append(f"{n_lt_na} filas de inventario con 'Lead_Time_Dias' vacío (se mantienen como NaN, no se imputan tiempos de proveedor).")
-    issues.append("'Lead_Time_Dias' convertido a numérico: rangos ('25-30 días') promediados, 'Inmediato' = 0.")
-
-    inv["Ultima_Revision"] = pd.to_datetime(inv["Ultima_Revision"], errors="coerce")
-    inv["Dias_Desde_Revision"] = (pd.Timestamp.today().normalize() - inv["Ultima_Revision"]).dt.days
-
-    # ---------- FEEDBACK ----------
-    f_raw_n = len(f)
-
-    # Rating_Producto = 99 es sentinel de error de captura -> NaN
-    n_rating_bad = (f["Rating_Producto"] == 99).sum()
-    f["Rating_Producto"] = f["Rating_Producto"].replace(99, np.nan)
-    if n_rating_bad:
-        issues.append(f"{n_rating_bad} filas de feedback con 'Rating_Producto' = 99 (sentinel inválido) → convertidas a NaN.")
-
-    # Ticket_Soporte_Abierto: booleano mal codificado (Sí/No/0/1) -> normalizar a booleano
-    ticket_map = {"Sí": True, "No": False, "1": True, "0": False, 1: True, 0: False}
-    f["Ticket_Soporte_Abierto"] = f["Ticket_Soporte_Abierto"].map(lambda x: ticket_map.get(x, ticket_map.get(str(x), np.nan)))
-    issues.append("'Ticket_Soporte_Abierto' normalizado a booleano (valores mezclados 'Sí'/'No'/'1'/'0').")
-
-    # Recomienda_Marca: SI/NO/Maybe/NaN -> normalizar y NaN se deja como "Sin respuesta"
-    rec_map = {"SI": "Sí", "NO": "No", "Maybe": "Tal vez"}
-    n_rec_na = f["Recomienda_Marca"].isna().sum()
-    f["Recomienda_Marca"] = f["Recomienda_Marca"].map(rec_map).fillna("Sin respuesta")
-    if n_rec_na:
-        issues.append(f"{n_rec_na} filas de feedback con 'Recomienda_Marca' vacío → etiquetadas 'Sin respuesta'.")
-
-    # Edad_Cliente atípica (>100 años) -> tratada como dato corrupto, se marca pero no se elimina la fila
-    mask_edad_bad = f["Edad_Cliente"] > 100
-    n_edad_bad = mask_edad_bad.sum()
-    f["Edad_Valida"] = ~mask_edad_bad
-    if n_edad_bad:
-        issues.append(f"{n_edad_bad} filas de feedback con 'Edad_Cliente' > 100 (dato implausible) → marcadas como inválidas, excluidas de análisis demográfico.")
-
-    # Comentario_Texto vacío o placeholders ("N/A", "---") -> "Sin comentario"
-    placeholders = {"N/A": True, "---": True, "": True}
-    f["Comentario_Texto"] = f["Comentario_Texto"].fillna("Sin comentario")
-    n_placeholder = f["Comentario_Texto"].isin(["N/A", "---"]).sum()
-    f.loc[f["Comentario_Texto"].isin(["N/A", "---"]), "Comentario_Texto"] = "Sin comentario"
-    if n_placeholder:
-        issues.append(f"{n_placeholder} comentarios con placeholders ('N/A', '---') → unificados como 'Sin comentario'.")
-
-    # Duplicados de Transaccion_ID en feedback -> una transacción puede tener múltiples encuestas; se conserva la última
-    n_dup_fb = f["Transaccion_ID"].duplicated().sum()
-    if n_dup_fb:
-        issues.append(f"{n_dup_fb} 'Transaccion_ID' duplicados en feedback (múltiples encuestas) → se conservó el registro más reciente por Feedback_ID.")
-    f = f.sort_values("Feedback_ID").drop_duplicates(subset="Transaccion_ID", keep="last")
-
-    summary = {
-        "issues": issues,
-        "t_raw_n": t_raw_n, "i_raw_n": i_raw_n, "f_raw_n": f_raw_n,
-    }
-
-    return t, inv, f, summary
+    texto_limpio = texto.replace("días", "").replace("dias", "").strip()
+    try:
+        return float(texto_limpio)
+    except ValueError:
+        return np.nan
 
 
-t, inv, f, clean_summary = load_and_clean()
+def limpiar_inventario(df_raw: pd.DataFrame):
+    """Limpia el dataset de inventario y documenta cada decisión tomada."""
+    df = df_raw.copy()
+    log = []
 
-# ----------------------------------------------------------------------------
-# UNIONES BASE
-# ----------------------------------------------------------------------------
+    # a) Categoria: unificar variantes de escritura ('smart-phone', 'LAPTOP', '???')
+    df["Categoria"] = (
+        df["Categoria"].astype(str).str.strip().str.lower().map(MAPA_CATEGORIAS)
+        .fillna(df["Categoria"])
+    )
+    sin_cat = (df["Categoria"] == "Sin Categoría").sum()
+    log.append(
+        f"Categoria: variantes de escritura ('smart-phone', 'LAPTOP') unificadas a un "
+        f"catálogo canónico; {sin_cat} registros con '???' se dejaron como categoría "
+        f"explícita 'Sin Categoría' (no se adivina el segmento real)."
+    )
 
-@st.cache_data
-def build_joins(t, inv, f):
-    tv = t.merge(inv, on="SKU_ID", how="left", suffixes=("", "_inv"))
-    tv["En_Inventario"] = tv["Categoria"].notna()
+    # b) Bodega_Origen: normalizar mayúsculas/minúsculas; conservar nodos externos
+    df["Bodega_Origen"] = (
+        df["Bodega_Origen"].astype(str).str.strip().str.lower().map(MAPA_BODEGAS)
+        .fillna(df["Bodega_Origen"])
+    )
+    log.append(
+        "Bodega_Origen: normalizado el casing ('norte' -> 'Norte'). 'Zona Franca' y "
+        "'Bodega Externa (Terceros)' se conservan como nodos logísticos legítimos, "
+        "no como errores, porque representan centros de distribución reales."
+    )
 
-    tv["Margen_Unitario"] = tv["Precio_Venta_Final"] - tv["Costo_Unitario_USD"]
-    tv["Margen_Total"] = np.where(
-        tv["En_Inventario"],
-        (tv["Precio_Venta_Final"] - tv["Costo_Unitario_USD"]) * tv["Cantidad_Vendida"] - tv["Costo_Envio"].fillna(0),
+    # c) Lead_Time_Dias: texto heterogéneo -> numérico, luego imputar por mediana
+    df["Lead_Time_Dias"] = df["Lead_Time_Dias"].apply(parsear_lead_time)
+    faltantes_lt = df["Lead_Time_Dias"].isnull().sum()
+    df["Lead_Time_Dias"] = df.groupby("Bodega_Origen")["Lead_Time_Dias"].transform(
+        lambda s: s.fillna(s.median())
+    )
+    df["Lead_Time_Dias"] = df["Lead_Time_Dias"].fillna(df["Lead_Time_Dias"].median())
+    log.append(
+        f"Lead_Time_Dias: {faltantes_lt} valores (rangos de texto, 'Inmediato' o vacíos) "
+        f"convertidos a numérico; los nulos remanentes se imputaron con la MEDIANA por "
+        f"bodega — variable declarada como 'ruidosa' en el diccionario, por lo que la "
+        f"mediana (robusta a colas largas) es preferible a la media."
+    )
+
+    # d) Ultima_Revision -> fecha
+    df["Ultima_Revision"] = pd.to_datetime(df["Ultima_Revision"], errors="coerce")
+
+    # e) Stock_Actual: nulos y negativos (contablemente imposibles)
+    nulos_stock = df["Stock_Actual"].isnull().sum()
+    negativos_stock = (df["Stock_Actual"] < 0).sum()
+    df["Stock_Actual_Original"] = df["Stock_Actual"]
+    df.loc[df["Stock_Actual"] < 0, "Stock_Actual"] = np.nan
+    df["Stock_Actual"] = df.groupby("Categoria")["Stock_Actual"].transform(
+        lambda s: s.fillna(s.median())
+    )
+    df["Stock_Actual"] = df["Stock_Actual"].fillna(df["Stock_Actual"].median())
+    log.append(
+        f"Stock_Actual: {negativos_stock} registros negativos (error de captura del ERP, "
+        f"no back-order real) y {nulos_stock} nulos se imputaron con la MEDIANA por "
+        f"categoría (distribución del stock con cola derecha; la media se distorsiona)."
+    )
+
+    # f) Costo_Unitario_USD: rango extremo ($0.05 - $850,000) -> winsorize (capping)
+    costo = pd.to_numeric(df["Costo_Unitario_USD"], errors="coerce")
+    p1, p99 = costo.quantile(0.01), costo.quantile(0.99)
+    outliers_costo = int(((costo < p1) | (costo > p99)).sum())
+    df["Costo_Unitario_USD"] = costo.clip(lower=p1, upper=p99)
+    df["Costo_Unitario_USD"] = df.groupby("Categoria")["Costo_Unitario_USD"].transform(
+        lambda s: s.fillna(s.median())
+    )
+    log.append(
+        f"Costo_Unitario_USD: {outliers_costo} outliers extremos capados al percentil "
+        f"1-99 (winsorize) en vez de eliminarse, porque el costo es indispensable para "
+        f"calcular el margen; los nulos (si existen) se imputan con la MEDIANA por "
+        f"categoría por la fuerte asimetría de precios entre Accesorios y Laptops."
+    )
+
+    # g) Duplicados exactos
+    dup = count_duplicates(df.drop(columns=["Stock_Actual_Original"], errors="ignore"))
+    df = df.drop_duplicates(subset=[c for c in df.columns if c != "Stock_Actual_Original"])
+    log.append(f"Registros duplicados exactos eliminados: {dup}.")
+
+    return df, log
+
+
+# =============================================================================
+# 3. LIMPIEZA — TRANSACCIONES LOGÍSTICA
+# =============================================================================
+
+MAPA_CIUDADES = {
+    "bog": "Bogotá",
+    "bogotá": "Bogotá",
+    "bogota": "Bogotá",
+    "med": "Medellín",
+    "medellín": "Medellín",
+    "medellin": "Medellín",
+    "cali": "Cali",
+    "barranquilla": "Barranquilla",
+    "bucaramanga": "Bucaramanga",
+}
+
+
+def limpiar_transacciones(df_raw: pd.DataFrame, inventario_skus: set):
+    """Limpia el dataset de transacciones y documenta cada decisión tomada."""
+    df = df_raw.copy()
+    log = []
+
+    # a) Fecha_Venta: formato consistente dd/mm/yyyy
+    df["Fecha_Venta"] = pd.to_datetime(df["Fecha_Venta"], dayfirst=True, errors="coerce")
+
+    # b) Cantidad_Vendida negativa: error de signo (no hay campo de devolución
+    #    separado), se corrige con valor absoluto en vez de descartar la venta.
+    negativos_cant = int((df["Cantidad_Vendida"] < 0).sum())
+    df["Cantidad_Vendida"] = df["Cantidad_Vendida"].abs()
+    log.append(
+        f"Cantidad_Vendida: {negativos_cant} registros con signo negativo (error de "
+        f"digitación del ERP) corregidos con valor absoluto; se optó por esto y no por "
+        f"eliminarlos porque el resto de la fila (precio, envío, fecha) es válido."
+    )
+
+    # c) Ciudad_Destino: abreviaturas y una fuga de 'Ventas_Web' (canal, no ciudad)
+    ciudad_norm = df["Ciudad_Destino"].astype(str).str.strip().str.lower().map(MAPA_CIUDADES)
+    fuga_canal = (df["Ciudad_Destino"] == "Ventas_Web").sum()
+    df["Ciudad_Destino"] = ciudad_norm
+    moda_ciudad = df["Ciudad_Destino"].mode(dropna=True)
+    moda_ciudad = moda_ciudad.iloc[0] if not moda_ciudad.empty else "Desconocida"
+    df["Ciudad_Destino"] = df["Ciudad_Destino"].fillna(moda_ciudad)
+    log.append(
+        f"Ciudad_Destino: abreviaturas ('BOG', 'MED') unificadas a nombre completo. "
+        f"{fuga_canal} registros traían 'Ventas_Web' (una fuga del campo Canal_Venta "
+        f"hacia Ciudad_Destino, error de exportación del sistema); al no poder recuperar "
+        f"la ciudad real se imputaron con la MODA (ciudad más frecuente)."
+    )
+
+    # d) Costo_Envio: nulos -> mediana por Canal_Venta (el costo de envío depende
+    #    fuertemente del canal: Físico vs. Online/App/WhatsApp).
+    nulos_envio = df["Costo_Envio"].isnull().sum()
+    df["Costo_Envio"] = df.groupby("Canal_Venta")["Costo_Envio"].transform(
+        lambda s: s.fillna(s.median())
+    )
+    df["Costo_Envio"] = df["Costo_Envio"].fillna(df["Costo_Envio"].median())
+    log.append(
+        f"Costo_Envio: {nulos_envio} nulos imputados con la MEDIANA por canal de venta "
+        f"(el costo logístico varía sistemáticamente entre canales)."
+    )
+
+    # e) Tiempo_Entrega_Real: 999 es un valor centinela de "no entregado / sin
+    #    registro", no un outlier orgánico -> se trata como dato faltante.
+    tiempo = pd.to_numeric(df["Tiempo_Entrega_Real"], errors="coerce")
+    centinela = int((tiempo >= 999).sum())
+    df["Entrega_Sin_Registro"] = tiempo >= 999
+    tiempo = tiempo.mask(tiempo >= 999, np.nan)
+    df["Tiempo_Entrega_Real"] = tiempo
+    df["Tiempo_Entrega_Real"] = df.groupby("Canal_Venta")["Tiempo_Entrega_Real"].transform(
+        lambda s: s.fillna(s.median())
+    )
+    df["Tiempo_Entrega_Real"] = df["Tiempo_Entrega_Real"].fillna(df["Tiempo_Entrega_Real"].median())
+    log.append(
+        f"Tiempo_Entrega_Real: {centinela} registros con el valor centinela 999 "
+        f"(entrega nunca confirmada por el sistema) se trataron como NaN y se "
+        f"imputaron con la MEDIANA por canal de venta; se conservó la bandera "
+        f"'Entrega_Sin_Registro' para no perder la señal de falla operativa."
+    )
+
+    # f) Estado_Envio: nulos -> categoría explícita 'Desconocido' (17% de nulos,
+    #    demasiado alto para imputar con la moda sin sesgar el KPI de servicio).
+    nulos_estado = df["Estado_Envio"].isnull().sum()
+    df["Estado_Envio"] = df["Estado_Envio"].fillna("Desconocido")
+    log.append(
+        f"Estado_Envio: {nulos_estado} nulos ({nulos_estado/len(df)*100:.1f}%) se "
+        f"mantuvieron como categoría explícita 'Desconocido' en lugar de imputar con "
+        f"la moda, para no inflar artificialmente ningún estado de envío."
+    )
+
+    # g) Venta Fantasma: SKU_ID que no existe en el inventario oficial
+    df["Es_Venta_Fantasma"] = ~df["SKU_ID"].isin(inventario_skus)
+    n_fantasma = int(df["Es_Venta_Fantasma"].sum())
+    log.append(
+        f"Venta Fantasma: {n_fantasma} transacciones ({n_fantasma/len(df)*100:.1f}%) con "
+        f"SKU_ID fuera del catálogo. DECISIÓN: se conservan como ingresos reales "
+        f"(producto nuevo no catalogado a tiempo), pero se excluyen del cálculo de "
+        f"margen (no hay costo de referencia) y quedan marcadas para revisión de catálogo."
+    )
+
+    # h) Duplicados exactos
+    dup = count_duplicates(df.drop(columns=["Entrega_Sin_Registro", "Es_Venta_Fantasma"], errors="ignore"))
+    df = df.drop_duplicates(
+        subset=[c for c in df.columns if c not in ("Entrega_Sin_Registro", "Es_Venta_Fantasma")]
+    )
+    log.append(f"Registros duplicados exactos eliminados: {dup}.")
+
+    return df, log
+
+
+# =============================================================================
+# 4. LIMPIEZA — FEEDBACK CLIENTES
+# =============================================================================
+
+
+def limpiar_feedback(df_raw: pd.DataFrame):
+    """Limpia el dataset de feedback y documenta cada decisión tomada."""
+    df = df_raw.copy()
+    log = []
+
+    # a) Feedback_ID duplicado (colisión de llave, NO fila duplicada):
+    #    el contenido de cada fila es distinto, así que no se elimina nada;
+    #    se genera una llave sustituta única para trazabilidad interna.
+    colisiones_id = int(df["Feedback_ID"].duplicated().sum())
+    df["Feedback_UID"] = [f"FB-UID-{i:06d}" for i in range(len(df))]
+    log.append(
+        f"Feedback_ID: {colisiones_id} colisiones de identificador (mismo ID, "
+        f"contenido distinto — bug de generación de IDs). No se eliminó ninguna fila; "
+        f"se creó 'Feedback_UID' como llave sustituta única para el análisis."
+    )
+
+    # b) Duplicados de contenido exacto (fila 100% igual) -> sí se eliminan
+    dup = count_duplicates(df.drop(columns=["Feedback_ID", "Feedback_UID"]))
+    df = df.drop_duplicates(subset=[c for c in df.columns if c not in ("Feedback_ID", "Feedback_UID")])
+    log.append(f"Registros 100% duplicados (mismo contenido) eliminados: {dup}.")
+
+    # c) Rating_Producto fuera de escala (1-5) -> típicamente un dígito extra (9 -> 99)
+    fuera_escala = int(((df["Rating_Producto"] < 1) | (df["Rating_Producto"] > 5)).sum())
+    df["Rating_Producto"] = df["Rating_Producto"].mask(
+        (df["Rating_Producto"] < 1) | (df["Rating_Producto"] > 5), np.nan
+    )
+    moda_rating = df["Rating_Producto"].mode(dropna=True)
+    moda_rating = moda_rating.iloc[0] if not moda_rating.empty else 3
+    df["Rating_Producto"] = df["Rating_Producto"].fillna(moda_rating)
+    log.append(
+        f"Rating_Producto: {fuera_escala} valores fuera del rango válido 1-5 (ej. 99, "
+        f"probable error de digitación) se imputaron con la MODA — es una escala "
+        f"ordinal tipo Likert, por lo que la moda es más apropiada que un promedio."
+    )
+
+    # d) Recomienda_Marca: normalizar valores y conservar el 'no responde' como señal
+    df["Recomienda_Marca"] = (
+        df["Recomienda_Marca"].astype(str).str.strip().str.upper()
+        .replace({"SI": "Sí", "NO": "No", "MAYBE": "Tal vez", "NAN": np.nan})
+    )
+    nulos_recomienda = df["Recomienda_Marca"].isnull().sum()
+    df["Recomienda_Marca"] = df["Recomienda_Marca"].fillna("No responde")
+    log.append(
+        f"Recomienda_Marca: valores normalizados ('SI'->'Sí', 'NO'->'No'); "
+        f"{nulos_recomienda} nulos ({nulos_recomienda/len(df)*100:.1f}%) se dejaron como "
+        f"categoría explícita 'No responde' en lugar de imputar con la moda, ya que es "
+        f"casi la cuarta parte de los datos y forzar una respuesta sesgaría el NPS cualitativo."
+    )
+
+    # e) Ticket_Soporte_Abierto: normalizar a booleano ('1'/'Sí' -> True)
+    df["Ticket_Soporte_Abierto"] = (
+        df["Ticket_Soporte_Abierto"].astype(str).str.strip()
+        .map({"Sí": True, "1": True, "No": False, "0": False})
+        .fillna(False)
+    )
+
+    # f) Comentario_Texto: '---' es un placeholder de "sin comentario", no un dato real
+    placeholders = int((df["Comentario_Texto"] == "---").sum())
+    df["Comentario_Texto"] = df["Comentario_Texto"].replace("---", np.nan).fillna("Sin comentario")
+    log.append(
+        f"Comentario_Texto: {placeholders} registros con el placeholder '---' "
+        f"unificados junto con los nulos bajo 'Sin comentario' (campo de texto libre, "
+        f"no se imputa contenido inventado)."
+    )
+
+    # g) Edad_Cliente: edades imposibles (>100 años) -> mediana
+    imposibles_edad = int((df["Edad_Cliente"] > 100).sum())
+    df["Edad_Cliente"] = df["Edad_Cliente"].mask(df["Edad_Cliente"] > 100, np.nan)
+    df["Edad_Cliente"] = df["Edad_Cliente"].fillna(df["Edad_Cliente"].median())
+    log.append(
+        f"Edad_Cliente: {imposibles_edad} edades imposibles (ej. 195 años) imputadas "
+        f"con la MEDIANA (la media se dejaría arrastrar por esos valores extremos)."
+    )
+
+    # h) Satisfaccion_NPS: ya viene en una única escala continua (-100 a 100);
+    #    se normaliza a 0-100 solo para facilitar la lectura del KPI.
+    df["Satisfaccion_NPS_Normalizado"] = (df["Satisfaccion_NPS"] + 100) / 2
+    log.append(
+        "Satisfaccion_NPS: reescalada de [-100, 100] a [0, 100] "
+        "(Satisfaccion_NPS_Normalizado) para una lectura más intuitiva del KPI, "
+        "sin alterar el orden ni la distribución relativa de las respuestas."
+    )
+
+    return df, log
+
+
+# =============================================================================
+# 5. INTEGRACIÓN Y FEATURE ENGINEERING (Fase 2)
+# =============================================================================
+
+
+def integrar_y_enriquecer(inv: pd.DataFrame, trans: pd.DataFrame, fb: pd.DataFrame) -> pd.DataFrame:
+    """Construye la 'fuente única de verdad' y calcula las variables derivadas."""
+    df = trans.merge(
+        inv[["SKU_ID", "Categoria", "Costo_Unitario_USD", "Lead_Time_Dias", "Bodega_Origen"]],
+        on="SKU_ID",
+        how="left",
+        suffixes=("", "_inv"),
+    )
+    df["Categoria"] = df["Categoria"].fillna("Sin Catalogar")
+
+    # Feature 1: Margen de Utilidad (NaN para ventas fantasma: no hay costo de referencia)
+    df["Margen_Utilidad"] = np.where(
+        df["Es_Venta_Fantasma"],
         np.nan,
+        df["Precio_Venta_Final"] - df["Costo_Unitario_USD"] - df["Costo_Envio"],
     )
 
-    tvf = tv.merge(f, on="Transaccion_ID", how="left")
-    return tv, tvf
+    # Feature 2: Brecha de Entrega vs. Prometido (Lead_Time_Dias = promesa teórica)
+    df["Brecha_Entrega_Dias"] = df["Tiempo_Entrega_Real"] - df["Lead_Time_Dias"]
 
-tv, tvf = build_joins(t, inv, f)
-
-# ----------------------------------------------------------------------------
-# SIDEBAR
-# ----------------------------------------------------------------------------
-
-st.sidebar.title("📦 Panel de Control")
-st.sidebar.markdown("Filtra los datos para explorar el negocio.")
-
-canales = st.sidebar.multiselect("Canal de Venta", sorted(t["Canal_Venta"].unique()), default=list(t["Canal_Venta"].unique()))
-ciudades = st.sidebar.multiselect("Ciudad Destino", sorted(t["Ciudad_Destino"].unique()), default=list(t["Ciudad_Destino"].unique()))
-
-with st.sidebar.expander("🧹 Notas de limpieza de datos", expanded=False):
-    st.caption(f"Transacciones originales: {clean_summary['t_raw_n']:,} | Inventario: {clean_summary['i_raw_n']:,} | Feedback: {clean_summary['f_raw_n']:,}")
-    for i_msg in clean_summary["issues"]:
-        st.markdown(f"- {i_msg}")
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Dashboard construido a partir de transacciones_logistica_v2, feedback_clientes_v2 e inventario_central_v2.")
-
-t_f = t[t["Canal_Venta"].isin(canales) & t["Ciudad_Destino"].isin(ciudades)]
-tv_f = tv[tv["Canal_Venta"].isin(canales) & tv["Ciudad_Destino"].isin(ciudades)]
-tvf_f = tvf[tvf["Canal_Venta"].isin(canales) & tvf["Ciudad_Destino"].isin(ciudades)]
-
-# ----------------------------------------------------------------------------
-# HEADER
-# ----------------------------------------------------------------------------
-
-st.title("📦 Dashboard de Rentabilidad, Logística y Fidelidad")
-st.markdown("Análisis integrado de **transacciones**, **inventario** y **feedback de clientes** para diagnosticar fugas de capital, cuellos de botella logísticos y riesgos operativos.")
-
-k1, k2, k3, k4 = st.columns(4)
-ingreso_total = tv_f["Ingreso_Total"].sum()
-margen_total = tv_f["Margen_Total"].sum()
-n_trx = len(t_f)
-pct_sin_inv = (~tv_f["En_Inventario"]).mean() * 100
-
-k1.metric("Ingreso Total (USD)", f"${ingreso_total:,.0f}")
-k2.metric("Margen Total (USD)", f"${margen_total:,.0f}", delta=f"{margen_total/ingreso_total*100:.1f}% del ingreso" if ingreso_total else None)
-k3.metric("Transacciones", f"{n_trx:,}")
-k4.metric("% Ventas sin match en inventario", f"{pct_sin_inv:.1f}%")
-
-st.markdown("---")
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "1️⃣ Fuga de Capital",
-    "2️⃣ Crisis Logística",
-    "3️⃣ Venta Invisible",
-    "4️⃣ Diagnóstico de Fidelidad",
-    "5️⃣ Riesgo Operativo",
-])
-
-# ============================================================================
-# TAB 1: FUGA DE CAPITAL Y RENTABILIDAD
-# ============================================================================
-with tab1:
-    st.header("Fuga de Capital y Rentabilidad")
-    st.markdown("Identificación de SKUs vendidos con **margen negativo** y evaluación de si la pérdida es por volumen o por una falla estructural de precios en un canal específico.")
-
-    matched = tv_f[tv_f["En_Inventario"]].copy()
-
-    sku_margin = matched.groupby("SKU_ID").agg(
-        Categoria=("Categoria", "first"),
-        Unidades_Vendidas=("Cantidad_Vendida", "sum"),
-        Ingreso_Total=("Ingreso_Total", "sum"),
-        Margen_Total=("Margen_Total", "sum"),
-        Precio_Prom=("Precio_Venta_Final", "mean"),
-        Costo_Unitario=("Costo_Unitario_USD", "first"),
+    # Feedback agregado a nivel de transacción (una transacción puede tener
+    # varios registros de feedback: se promedian las métricas numéricas)
+    fb_agg = fb.groupby("Transaccion_ID").agg(
+        Rating_Producto=("Rating_Producto", "mean"),
+        Rating_Logistica=("Rating_Logistica", "mean"),
+        NPS=("Satisfaccion_NPS_Normalizado", "mean"),
+        Ticket_Soporte=("Ticket_Soporte_Abierto", "max"),
     ).reset_index()
-    sku_margin["Margen_Pct"] = sku_margin["Margen_Total"] / sku_margin["Ingreso_Total"] * 100
+    df = df.merge(fb_agg, on="Transaccion_ID", how="left")
 
-    neg_skus = sku_margin[sku_margin["Margen_Total"] < 0].sort_values("Margen_Total")
-
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.metric("SKUs con margen negativo", f"{len(neg_skus):,} / {len(sku_margin):,}")
-        st.metric("Pérdida total acumulada (USD)", f"${neg_skus['Margen_Total'].sum():,.0f}")
-    with c2:
-        by_channel = matched[matched["SKU_ID"].isin(neg_skus["SKU_ID"])].groupby("Canal_Venta")["Margen_Total"].sum().sort_values()
-        fig = px.bar(by_channel, orientation="h", title="Pérdida por canal (SKUs con margen negativo)",
-                     labels={"value": "Margen Total (USD)", "Canal_Venta": "Canal"}, color=by_channel.values,
-                     color_continuous_scale="Reds_r")
-        fig.update_layout(showlegend=False, coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Top 20 SKUs con mayor pérdida")
-    st.dataframe(
-        neg_skus.head(20)[["SKU_ID", "Categoria", "Unidades_Vendidas", "Ingreso_Total", "Margen_Total", "Margen_Pct"]]
-        .style.format({"Ingreso_Total": "${:,.0f}", "Margen_Total": "${:,.0f}", "Margen_Pct": "{:.1f}%"}),
-        use_container_width=True,
+    # Feature 3: Ratio de Soporte por Categoría
+    ratio_soporte = (
+        df.groupby("Categoria")["Ticket_Soporte"].mean().rename("Ratio_Soporte_Categoria")
     )
+    df = df.merge(ratio_soporte, on="Categoria", how="left")
 
-    # Volumen vs Falla estructural: dispersión de unidades vendidas vs margen para SKUs negativos, por canal
-    fig2 = px.scatter(
-        matched[matched["SKU_ID"].isin(neg_skus["SKU_ID"])].groupby(["SKU_ID", "Canal_Venta"]).agg(
-            Unidades=("Cantidad_Vendida", "sum"), Margen=("Margen_Total", "sum")
-        ).reset_index(),
-        x="Unidades", y="Margen", color="Canal_Venta",
-        title="¿Pérdida por volumen o por precio? Unidades vendidas vs. Margen (SKUs negativos)",
-        labels={"Unidades": "Unidades Vendidas", "Margen": "Margen Total (USD)"},
-        hover_data=["SKU_ID"],
-    )
-    fig2.add_hline(y=0, line_dash="dash", line_color="gray")
-    st.plotly_chart(fig2, use_container_width=True)
+    return df
 
-    online_share = (matched["Canal_Venta"] == "Online").mean() * 100
-    online_neg_share = (matched[matched["SKU_ID"].isin(neg_skus["SKU_ID"])]["Canal_Venta"] == "Online").mean() * 100
 
-    st.info(
-        f"**Lectura del hallazgo:** el canal Online representa **{online_share:.1f}%** de las transacciones con match en inventario, "
-        f"pero concentra **{online_neg_share:.1f}%** de las transacciones vinculadas a SKUs con margen negativo. "
-        + ("Esto sugiere una **falla crítica de pricing en Online** (sobre-representación de pérdidas), no solo pérdida aceptable por volumen: "
-           "revisar reglas de descuento, comisiones de marketplace o promociones automáticas en ese canal."
-           if online_neg_share > online_share * 1.15 else
-           "La proporción es similar a su peso general, lo que sugiere que las pérdidas están más distribuidas y podrían explicarse "
-           "por estrategia de volumen (loss-leaders) en ciertos SKUs, más que por una falla sistemática de precios en un solo canal.")
-    )
+# =============================================================================
+# 6. FASE 3 — IA CON GROQ (Llama-3)
+# =============================================================================
 
-# ============================================================================
-# TAB 2: CRISIS LOGÍSTICA Y CUELLOS DE BOTELLA
-# ============================================================================
-with tab2:
-    st.header("Crisis Logística y Cuellos de Botella")
-    st.markdown("Correlación entre **Tiempo de Entrega** y **NPS bajo** por ciudad y bodega, para identificar la zona que requiere cambio inmediato de operador.")
 
-    log_df = tvf_f.dropna(subset=["Tiempo_Entrega_Valido", "Satisfaccion_NPS"]).copy()
-
-    # Correlación por ciudad
-    corr_city = log_df.groupby("Ciudad_Destino").apply(
-        lambda g: g["Tiempo_Entrega_Valido"].corr(g["Satisfaccion_NPS"]) if len(g) > 5 else np.nan
-    ).dropna().sort_values()
-    corr_city.name = "Correlacion"
-
-    corr_bodega = log_df.dropna(subset=["Bodega_Origen"]).groupby("Bodega_Origen").apply(
-        lambda g: g["Tiempo_Entrega_Valido"].corr(g["Satisfaccion_NPS"]) if len(g) > 5 else np.nan
-    ).dropna().sort_values()
-    corr_bodega.name = "Correlacion"
-
-    c1, c2 = st.columns(2)
-    with c1:
-        fig = px.bar(corr_city, orientation="h", title="Correlación Tiempo de Entrega vs NPS — por Ciudad",
-                     labels={"value": "Correlación (Pearson)", "Ciudad_Destino": "Ciudad"},
-                     color=corr_city.values, color_continuous_scale="RdBu_r", range_color=[-1, 1])
-        fig.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-    with c2:
-        fig = px.bar(corr_bodega, orientation="h", title="Correlación Tiempo de Entrega vs NPS — por Bodega",
-                     labels={"value": "Correlación (Pearson)", "Bodega_Origen": "Bodega"},
-                     color=corr_bodega.values, color_continuous_scale="RdBu_r", range_color=[-1, 1])
-        fig.update_layout(coloraxis_showscale=False)
-        st.plotly_chart(fig, use_container_width=True)
-
-    worst_city = corr_city.idxmin() if len(corr_city) else None
-    worst_bodega = corr_bodega.idxmin() if len(corr_bodega) else None
-
-    if worst_city is not None:
-        wc_data = log_df[log_df["Ciudad_Destino"] == worst_city]
-        avg_time_wc = wc_data["Tiempo_Entrega_Valido"].mean()
-        avg_nps_wc = wc_data["Satisfaccion_NPS"].mean()
-        st.error(
-            f"**🚨 Zona crítica identificada: {worst_city}** (bodega más asociada: **{worst_bodega}**). "
-            f"Correlación Tiempo de Entrega–NPS = **{corr_city.min():.2f}** — a mayor tiempo de entrega, el NPS cae de forma más pronunciada que en cualquier otra ciudad. "
-            f"Tiempo de entrega promedio: **{avg_time_wc:.1f} días**, NPS promedio: **{avg_nps_wc:.1f}**. "
-            "Esta es la zona que requiere **cambio inmediato de operador logístico**."
+def construir_resumen_estadistico(df: pd.DataFrame) -> str:
+    """Arma el resumen estadístico (texto) que se envía como prompt a la IA."""
+    partes = [f"Registros analizados: {len(df)}"]
+    partes.append(f"Ingresos totales: ${df['Precio_Venta_Final'].sum():,.2f}")
+    if "Margen_Utilidad" in df.columns:
+        partes.append(f"Margen de utilidad promedio: ${df['Margen_Utilidad'].mean():,.2f}")
+        partes.append(
+            f"% ventas fantasma (sin margen calculable): "
+            f"{df['Es_Venta_Fantasma'].mean() * 100:.1f}%"
         )
-
-    st.subheader("Dispersión Tiempo de Entrega vs NPS (zona crítica)")
-    if worst_city is not None:
-        fig3 = px.scatter(wc_data, x="Tiempo_Entrega_Valido", y="Satisfaccion_NPS", color="Bodega_Origen",
-                           trendline="ols", title=f"{worst_city}: Tiempo de Entrega vs NPS",
-                           labels={"Tiempo_Entrega_Valido": "Tiempo de Entrega (días)", "Satisfaccion_NPS": "NPS"})
-        st.plotly_chart(fig3, use_container_width=True)
-
-    st.subheader("Mapa de calor: Tiempo de entrega promedio por Ciudad y Estado de Envío")
-    heat = t_f.groupby(["Ciudad_Destino", "Estado_Envio"])["Tiempo_Entrega_Valido"].mean().reset_index() if "Tiempo_Entrega_Valido" in t_f.columns else None
-    heat_pivot = t_f.assign(Tiempo_Entrega_Valido=np.where(t_f["Tiempo_Entrega_Real"] >= 999, np.nan, t_f["Tiempo_Entrega_Real"])).pivot_table(
-        index="Ciudad_Destino", columns="Estado_Envio", values="Tiempo_Entrega_Valido", aggfunc="mean"
-    )
-    fig4 = px.imshow(heat_pivot, text_auto=".1f", color_continuous_scale="Reds", aspect="auto",
-                      title="Tiempo de entrega promedio (días) por Ciudad × Estado de Envío")
-    st.plotly_chart(fig4, use_container_width=True)
-
-# ============================================================================
-# TAB 3: ANÁLISIS DE LA VENTA INVISIBLE
-# ============================================================================
-with tab3:
-    st.header("Análisis de la Venta Invisible")
-    st.markdown("Cuantificación del impacto financiero de ventas cuyo SKU **no existe** en el maestro de inventario.")
-
-    invisible = tv_f[~tv_f["En_Inventario"]]
-    visible = tv_f[tv_f["En_Inventario"]]
-
-    ingreso_invisible = invisible["Ingreso_Total"].sum()
-    ingreso_total_f = tv_f["Ingreso_Total"].sum()
-    pct_riesgo = ingreso_invisible / ingreso_total_f * 100 if ingreso_total_f else 0
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Ingreso en riesgo (USD)", f"${ingreso_invisible:,.0f}")
-    c2.metric("% del ingreso total en riesgo", f"{pct_riesgo:.1f}%")
-    c3.metric("SKUs 'fantasma' distintos", f"{invisible['SKU_ID'].nunique():,}")
-
-    fig = px.pie(
-        values=[ingreso_invisible, ingreso_total_f - ingreso_invisible],
-        names=["Sin match en inventario", "Con match en inventario"],
-        title="Ingreso Total: Ventas Controladas vs. Venta Invisible",
-        color_discrete_sequence=["#d62728", "#2ca02c"],
-        hole=0.45,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-    c1, c2 = st.columns(2)
-    with c1:
-        by_channel = invisible.groupby("Canal_Venta")["Ingreso_Total"].sum().sort_values(ascending=False)
-        fig2 = px.bar(by_channel, title="Ingreso 'invisible' por Canal de Venta",
-                      labels={"value": "Ingreso (USD)", "Canal_Venta": "Canal"})
-        st.plotly_chart(fig2, use_container_width=True)
-    with c2:
-        by_city = invisible.groupby("Ciudad_Destino")["Ingreso_Total"].sum().sort_values(ascending=False)
-        fig3 = px.bar(by_city, title="Ingreso 'invisible' por Ciudad",
-                      labels={"value": "Ingreso (USD)", "Ciudad_Destino": "Ciudad"})
-        st.plotly_chart(fig3, use_container_width=True)
-
-    st.subheader("Top SKUs fantasma por ingreso comprometido")
-    top_ghost = invisible.groupby("SKU_ID").agg(
-        Ingreso_Total=("Ingreso_Total", "sum"),
-        Unidades=("Cantidad_Vendida", "sum"),
-        Transacciones=("Transaccion_ID", "count"),
-    ).sort_values("Ingreso_Total", ascending=False).head(15).reset_index()
-    st.dataframe(top_ghost.style.format({"Ingreso_Total": "${:,.0f}"}), use_container_width=True)
-
-    st.warning(
-        f"**Conclusión:** un **{pct_riesgo:.1f}%** del ingreso total (**${ingreso_invisible:,.0f} USD**) corresponde a SKUs que no existen "
-        "en el maestro de inventario. Esto implica que la empresa no puede calcular costo, margen real, ni gestionar reposición para esa "
-        "porción del negocio — es ingreso **contable pero no controlado**, con riesgo de fraude, error de carga de catálogo, o productos "
-        "descontinuados que siguen vendiéndose sin trazabilidad."
-    )
-
-# ============================================================================
-# TAB 4: DIAGNÓSTICO DE FIDELIDAD
-# ============================================================================
-with tab4:
-    st.header("Diagnóstico de Fidelidad")
-    st.markdown("Categorías con **alta disponibilidad de stock** pero **sentimiento negativo del cliente**: ¿mala calidad o sobrecosto?")
-
-    cat_df = tvf_f[tvf_f["En_Inventario"]].dropna(subset=["Categoria"])
-
-    cat_summary = cat_df.groupby("Categoria").agg(
-        Stock_Promedio=("Stock_Actual", "mean"),
-        NPS_Promedio=("Satisfaccion_NPS", "mean"),
-        Rating_Producto_Promedio=("Rating_Producto", "mean"),
-        Precio_Promedio=("Precio_Venta_Final", "mean"),
-        Costo_Promedio=("Costo_Unitario_USD", "mean"),
-        Transacciones=("Transaccion_ID", "count"),
-    ).reset_index()
-    cat_summary["Markup_Pct"] = (cat_summary["Precio_Promedio"] - cat_summary["Costo_Promedio"]) / cat_summary["Costo_Promedio"] * 100
-
-    stock_median = cat_summary["Stock_Promedio"].median()
-    nps_median = cat_summary["NPS_Promedio"].median()
-
-    fig = px.scatter(
-        cat_summary, x="Stock_Promedio", y="NPS_Promedio", size="Transacciones", color="Markup_Pct",
-        text="Categoria", color_continuous_scale="RdYlGn_r",
-        title="Stock promedio vs NPS promedio por Categoría (tamaño = # transacciones, color = % markup)",
-        labels={"Stock_Promedio": "Stock Promedio (unidades)", "NPS_Promedio": "NPS Promedio"},
-    )
-    fig.add_vline(x=stock_median, line_dash="dash", line_color="gray")
-    fig.add_hline(y=nps_median, line_dash="dash", line_color="gray")
-    fig.update_traces(textposition="top center")
-    st.plotly_chart(fig, use_container_width=True)
-
-    paradox = cat_summary[(cat_summary["Stock_Promedio"] >= stock_median) & (cat_summary["NPS_Promedio"] < nps_median)].sort_values("NPS_Promedio")
-
-    st.subheader("Categorías en zona de paradoja (alto stock + NPS bajo)")
-    st.dataframe(
-        paradox[["Categoria", "Stock_Promedio", "NPS_Promedio", "Rating_Producto_Promedio", "Markup_Pct", "Transacciones"]]
-        .style.format({"Stock_Promedio": "{:.0f}", "NPS_Promedio": "{:.1f}", "Rating_Producto_Promedio": "{:.2f}", "Markup_Pct": "{:.1f}%"}),
-        use_container_width=True,
-    )
-
-    if len(paradox):
-        for _, row in paradox.iterrows():
-            veredicto = "sobrecosto" if row["Markup_Pct"] > cat_summary["Markup_Pct"].median() and row["Rating_Producto_Promedio"] >= 3 else \
-                        "mala calidad de producto" if row["Rating_Producto_Promedio"] < 3 else \
-                        "combinación de ambos factores"
-            st.markdown(
-                f"- **{row['Categoria']}**: markup de **{row['Markup_Pct']:.0f}%**, rating de producto promedio **{row['Rating_Producto_Promedio']:.1f}/5** "
-                f"→ el diagnóstico apunta a **{veredicto}** como causa principal de la insatisfacción."
+    if "Brecha_Entrega_Dias" in df.columns:
+        partes.append(
+            f"Brecha promedio entrega vs. promesa: {df['Brecha_Entrega_Dias'].mean():.1f} días"
+        )
+    if "NPS" in df.columns:
+        partes.append(f"NPS normalizado promedio: {df['NPS'].mean():.1f}/100")
+    if "Ratio_Soporte_Categoria" in df.columns and not df.empty:
+        top = df.groupby("Categoria")["Ratio_Soporte_Categoria"].mean().sort_values(ascending=False)
+        if len(top):
+            partes.append(
+                f"Categoría con más tickets de soporte: {top.index[0]} "
+                f"({top.iloc[0] * 100:.1f}% de sus ventas)"
             )
-    else:
-        st.info("No se detectaron categorías que combinen stock por encima de la mediana con NPS por debajo de la mediana en el filtro actual.")
+    return "\n".join(partes)
 
-    st.caption(
-        "**Cómo leer la paradoja:** si el markup (precio vs costo) es alto y el rating de producto sigue siendo aceptable, "
-        "el cliente probablemente percibe **sobrecosto** (paga de más por lo que recibe). Si el rating de producto es bajo "
-        "independientemente del markup, la causa raíz es **calidad del producto**, no el precio."
+
+def generar_recomendaciones_ia(resumen_stats: str, api_key: str) -> str:
+    """Llama a Llama-3 en Groq para generar 3 párrafos de recomendación."""
+    client = Groq(api_key=api_key)
+    prompt = f"""Eres un consultor senior de datos contratado por TechLogistics S.A.
+A continuación tienes el resumen estadístico de los datos YA FILTRADOS por el analista:
+
+{resumen_stats}
+
+Genera EXACTAMENTE 3 párrafos de recomendación estratégica en español para la
+gerencia general, cubriendo:
+1) Diagnóstico de rentabilidad y riesgo operativo (margen, ventas fantasma, stock).
+2) Diagnóstico de desempeño logístico y experiencia del cliente (entregas, NPS, soporte).
+3) Recomendación accionable priorizada (qué hacer primero y por qué).
+No uses viñetas ni encabezados, solo los 3 párrafos en prosa."""
+
+    completion = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.4,
+        max_tokens=800,
+    )
+    return completion.choices[0].message.content
+
+
+# =============================================================================
+# 7. INTERFAZ STREAMLIT
+# =============================================================================
+
+
+def main() -> None:
+    st.title("📦 TechLogistics S.A. — Consultoría de Datos")
+    st.caption("Challenge 02 · Fundamentos en Ciencia de Datos · EAFIT 2026-1")
+
+    inv_raw, trans_raw, fb_raw = cargar_datasets()
+    if inv_raw is None or trans_raw is None or fb_raw is None:
+        st.warning("Aún faltan uno o más datasets. Revisa la carpeta `data/` o sube los "
+                   "archivos manualmente en la barra lateral.")
+        st.stop()
+
+    # ---- Limpieza (con manejo de errores para no tumbar la app) --------------
+    try:
+        inv_clean, log_inv = limpiar_inventario(inv_raw)
+        trans_clean, log_trans = limpiar_transacciones(trans_raw, set(inv_clean["SKU_ID"]))
+        fb_clean, log_fb = limpiar_feedback(fb_raw)
+        df_master = integrar_y_enriquecer(inv_clean, trans_clean, fb_clean)
+    except Exception as exc:  # noqa: BLE001 - queremos capturar cualquier fallo de pipeline
+        st.error(f"Ocurrió un error durante el procesamiento de los datos: {exc}")
+        st.stop()
+
+    # ---- Filtros globales en la barra lateral ---------------------------------
+    st.sidebar.header("🔎 Filtros de análisis")
+    categorias_disp = ["(Todas)"] + sorted(df_master["Categoria"].dropna().unique().tolist())
+    categoria_sel = st.sidebar.selectbox("Categoría", categorias_disp)
+
+    ciudades_disp = ["(Todas)"] + sorted(df_master["Ciudad_Destino"].dropna().unique().tolist())
+    ciudad_sel = st.sidebar.selectbox("Ciudad destino", ciudades_disp)
+
+    excluir_fantasma = st.sidebar.checkbox("Excluir ventas fantasma del análisis", value=False)
+
+    fecha_min = df_master["Fecha_Venta"].min()
+    fecha_max = df_master["Fecha_Venta"].max()
+    rango_fechas = st.sidebar.date_input(
+        "Rango de fechas de venta",
+        value=(fecha_min.date(), fecha_max.date()) if pd.notna(fecha_min) else None,
     )
 
-# ============================================================================
-# TAB 5: STORYTELLING DE RIESGO OPERATIVO
-# ============================================================================
-with tab5:
-    st.header("Storytelling de Riesgo Operativo")
-    st.markdown("Relación entre la **antigüedad de la última revisión de stock** y la **tasa de tickets de soporte**, para identificar bodegas que operan 'a ciegas'.")
+    df_filtrado = df_master.copy()
+    if categoria_sel != "(Todas)":
+        df_filtrado = df_filtrado[df_filtrado["Categoria"] == categoria_sel]
+    if ciudad_sel != "(Todas)":
+        df_filtrado = df_filtrado[df_filtrado["Ciudad_Destino"] == ciudad_sel]
+    if excluir_fantasma:
+        df_filtrado = df_filtrado[~df_filtrado["Es_Venta_Fantasma"]]
+    if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
+        inicio, fin = pd.to_datetime(rango_fechas[0]), pd.to_datetime(rango_fechas[1])
+        df_filtrado = df_filtrado[
+            (df_filtrado["Fecha_Venta"] >= inicio) & (df_filtrado["Fecha_Venta"] <= fin)
+        ]
 
-    op_df = tvf_f[tvf_f["En_Inventario"]].dropna(subset=["Dias_Desde_Revision", "Bodega_Origen"])
+    st.sidebar.metric("Registros tras filtros", f"{len(df_filtrado):,}")
 
-    bodega_summary = op_df.groupby("Bodega_Origen").agg(
-        Dias_Desde_Revision_Prom=("Dias_Desde_Revision", "mean"),
-        Tasa_Tickets=("Ticket_Soporte_Abierto", "mean"),
-        NPS_Promedio=("Satisfaccion_NPS", "mean"),
-        Transacciones=("Transaccion_ID", "count"),
-    ).reset_index()
-    bodega_summary["Tasa_Tickets_Pct"] = bodega_summary["Tasa_Tickets"] * 100
+    tab1, tab2, tab3 = st.tabs([
+        "1️⃣ Auditoría de Calidad",
+        "2️⃣ Integración y Features",
+        "3️⃣ IA con Groq",
+    ])
 
-    fig = px.scatter(
-        bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
-        text="Bodega_Origen", color_continuous_scale="RdYlGn",
-        title="Antigüedad de última revisión de stock vs. Tasa de Tickets de Soporte, por Bodega",
-        labels={"Dias_Desde_Revision_Prom": "Días desde última revisión de stock (promedio)", "Tasa_Tickets_Pct": "Tasa de Tickets de Soporte (%)"},
-    )
-    fig.update_traces(textposition="top center", marker=dict(sizemin=8))
-    st.plotly_chart(fig, use_container_width=True)
+    # ---------------- TAB 1: AUDITORÍA -----------------------------------------
+    with tab1:
+        st.subheader("Health Score antes vs. después del procesamiento")
 
-    blind_threshold = bodega_summary["Dias_Desde_Revision_Prom"].median()
-    blind_warehouses = bodega_summary[bodega_summary["Dias_Desde_Revision_Prom"] > blind_threshold].sort_values("Tasa_Tickets_Pct", ascending=False)
+        numeric_map = {
+            "Inventario": ["Stock_Actual", "Costo_Unitario_USD", "Lead_Time_Dias"],
+            "Transacciones": ["Tiempo_Entrega_Real", "Precio_Venta_Final", "Cantidad_Vendida"],
+            "Feedback": ["Satisfaccion_NPS", "Edad_Cliente", "Rating_Producto"],
+        }
+        score_before = {
+            "Inventario": health_score(inv_raw, numeric_map["Inventario"]),
+            "Transacciones": health_score(trans_raw, numeric_map["Transacciones"]),
+            "Feedback": health_score(fb_raw, numeric_map["Feedback"]),
+        }
+        score_after = {
+            "Inventario": health_score(inv_clean, numeric_map["Inventario"]),
+            "Transacciones": health_score(trans_clean, numeric_map["Transacciones"]),
+            "Feedback": health_score(fb_clean, numeric_map["Feedback"]),
+        }
 
-    st.subheader("Bodegas operando 'a ciegas' (revisión de stock más antigua que la mediana)")
-    st.dataframe(
-        blind_warehouses.style.format({
-            "Dias_Desde_Revision_Prom": "{:.0f} días", "Tasa_Tickets_Pct": "{:.1f}%", "NPS_Promedio": "{:.1f}"
-        }),
-        use_container_width=True,
-    )
+        col1, col2 = st.columns([1.3, 1])
+        with col1:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(name="Antes", x=list(score_before.keys()), y=list(score_before.values())))
+            fig.add_trace(go.Bar(name="Después", x=list(score_after.keys()), y=list(score_after.values())))
+            fig.update_layout(title="Health Score (0-100)", barmode="group", yaxis_range=[0, 100])
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            for nombre, df_ in [("Inventario", inv_raw), ("Transacciones", trans_raw), ("Feedback", fb_raw)]:
+                with st.expander(f"% Nulidad por columna — {nombre}"):
+                    st.dataframe(null_report(df_))
 
-    if len(blind_warehouses):
-        top_blind = blind_warehouses.iloc[0]
-        st.error(
-            f"**🚨 Bodega con mayor riesgo operativo: {top_blind['Bodega_Origen']}** — su stock no se revisa en promedio hace "
-            f"**{top_blind['Dias_Desde_Revision_Prom']:.0f} días**, y presenta una tasa de tickets de soporte de "
-            f"**{top_blind['Tasa_Tickets_Pct']:.1f}%**, con un NPS promedio de **{top_blind['NPS_Promedio']:.1f}**. "
-            "La falta de revisión de inventario deriva en quiebres de stock no detectados, promesas de entrega incumplidas, "
-            "y esto se traduce directamente en más tickets de soporte y peor satisfacción final del cliente."
+        st.markdown("### Decisiones de limpieza aplicadas")
+        reporte_texto = [f"REPORTE DE LIMPIEZA — TechLogistics S.A. ({datetime.now():%Y-%m-%d %H:%M})", ""]
+        for titulo, log, before, after in [
+            ("Inventario", log_inv, score_before["Inventario"], score_after["Inventario"]),
+            ("Transacciones", log_trans, score_before["Transacciones"], score_after["Transacciones"]),
+            ("Feedback", log_fb, score_before["Feedback"], score_after["Feedback"]),
+        ]:
+            st.markdown(f"**{titulo}** — Health Score: {before} → {after}")
+            reporte_texto.append(f"== {titulo} == (Health Score: {before} -> {after})")
+            for linea in log:
+                st.markdown(f"- {linea}")
+                reporte_texto.append(f"- {linea}")
+            reporte_texto.append("")
+
+        st.download_button(
+            label="⬇️ Descargar reporte de limpieza (.txt)",
+            data="\n".join(reporte_texto).encode("utf-8"),
+            file_name=f"reporte_limpieza_techlogistics_{datetime.now():%Y%m%d}.txt",
+            mime="text/plain",
         )
 
-    corr_op = bodega_summary["Dias_Desde_Revision_Prom"].corr(bodega_summary["Tasa_Tickets_Pct"])
-    st.info(
-        f"**Correlación global (a nivel bodega) entre antigüedad de revisión y tasa de tickets: {corr_op:.2f}.** "
-        + ("Existe una relación positiva clara: mientras más 'a ciegas' opera una bodega, más soporte reactivo genera, "
-           "lo cual erosiona el NPS aguas abajo." if corr_op > 0.3 else
-           "La relación es débil con los datos actuales, lo que sugiere que otros factores (transportista, ciudad, categoría de producto) "
-           "pesan más que la sola antigüedad de revisión — aunque los casos individuales extremos (arriba) siguen siendo focos de atención inmediata.")
-    )
+    # ---------------- TAB 2: INTEGRACIÓN ---------------------------------------
+    with tab2:
+        st.subheader("Fuente única de verdad (merge estratégico)")
 
-st.markdown("---")
-st.caption("Dashboard generado con Streamlit + Plotly. Todos los valores monetarios en USD. Los cálculos de margen requieren que el SKU tenga match en el maestro de inventario.")
+        c1, c2, c3 = st.columns(3)
+        c1.metric(
+            "Ventas fantasma",
+            f"{df_filtrado['Es_Venta_Fantasma'].sum():,}",
+            f"{df_filtrado['Es_Venta_Fantasma'].mean() * 100:.1f}% del total filtrado",
+        )
+        c2.metric("Margen promedio", f"${df_filtrado['Margen_Utilidad'].mean():,.2f}")
+        c3.metric("Brecha entrega promedio", f"{df_filtrado['Brecha_Entrega_Dias'].mean():.1f} días")
+
+        st.dataframe(df_filtrado.head(200))
+
+        fig2 = px.histogram(
+            df_filtrado, x="Brecha_Entrega_Dias", nbins=40,
+            title="Distribución: Brecha de Entrega (real - prometido)",
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+        fig3 = px.bar(
+            df_filtrado.groupby("Categoria")["Ratio_Soporte_Categoria"].mean().reset_index(),
+            x="Categoria", y="Ratio_Soporte_Categoria",
+            title="Ratio de tickets de soporte por categoría",
+        )
+        st.plotly_chart(fig3, use_container_width=True)
+
+        st.download_button(
+            label="⬇️ Descargar dataset integrado (.csv)",
+            data=df_filtrado.to_csv(index=False).encode("utf-8"),
+            file_name="techlogistics_master_dataset.csv",
+            mime="text/csv",
+        )
+
+    # ---------------- TAB 3: IA -------------------------------------------------
+    with tab3:
+        st.subheader("Recomendaciones estratégicas generadas con Llama-3 (Groq)")
+
+        api_key_input = st.text_input(
+            "GROQ_API_KEY", type="password", value=os.environ.get("GROQ_API_KEY", "")
+        )
+        generar = st.button("Generar recomendaciones para el segmento filtrado")
+
+        if generar:
+            resumen = construir_resumen_estadistico(df_filtrado)
+            st.code(resumen, language="text")
+
+            if not GROQ_AVAILABLE:
+                st.error("El paquete `groq` no está instalado. Agrega `groq` a requirements.txt.")
+            elif not api_key_input:
+                st.warning("Ingresa tu GROQ_API_KEY para generar las recomendaciones.")
+            elif df_filtrado.empty:
+                st.warning("El filtro actual no tiene registros; ajusta los filtros de la barra lateral.")
+            else:
+                with st.spinner("Consultando a Llama-3 en Groq..."):
+                    try:
+                        texto = generar_recomendaciones_ia(resumen, api_key_input)
+                        st.markdown(texto)
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(f"Error al llamar a la API de Groq: {exc}")
+
+
+if __name__ == "__main__":
+    main()
