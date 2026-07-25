@@ -398,32 +398,7 @@ with tab0:
 # TAB MERGE: UNIÓN ESTRATÉGICA + ANTES VS DESPUÉS
 # ============================================================================
 with tab_merge:
-    st.header("🔗 Unión Estratégica: Una Sola Fuente de Verdad")
-    st.markdown(
-        "Las 3 tablas se integran en un único dataset analítico (`tv` / `tvf`) mediante `merge` tipo **left join**: "
-        "`transacciones` es la tabla base (es la única con granularidad de evento de venta), y se le añaden los atributos "
-        "de `inventario` (por `SKU_ID`) y de `feedback` (por `Transaccion_ID`). Un left join se elige deliberadamente sobre "
-        "un inner join para **no perder ninguna venta real** solo porque le falte información de catálogo o de encuesta."
-    )
-
-    t_raw = pd.read_csv(DATA_DIR / "transacciones_logistica_v2.csv")
-    inv_raw = pd.read_csv(DATA_DIR / "inventario_central_v2.csv")
-    f_raw = pd.read_csv(DATA_DIR / "feedback_clientes_v2.csv")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Filas base (transacciones)", f"{len(t_raw):,}")
-    c2.metric("Filas tras join con inventario", f"{len(tv):,}", "0 filas perdidas")
-    c3.metric("Filas tras join con feedback", f"{len(tvf):,}", "0 filas perdidas")
-
-    st.code(
-        "tv  = transacciones.merge(inventario, on='SKU_ID', how='left')\n"
-        "tvf = tv.merge(feedback, on='Transaccion_ID', how='left')",
-        language="python",
-    )
-    st.caption(
-        "Resultado: cada fila sigue siendo una transacción; las columnas de inventario/feedback quedan en NaN cuando no hay "
-        "match (SKU fantasma o venta sin encuesta respondida), en vez de descartar la transacción."
-    )
+    st.header("🔗 Procesamiento de los datos")
 
     st.markdown("---")
     st.header("📊 Antes vs. Después: Impacto de la Limpieza")
