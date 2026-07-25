@@ -293,7 +293,7 @@ with tab0:
     null_df.columns = ["Columna", "% Nulos"]
     c1, c2 = st.columns([1, 1])
     with c1:
-        st.dataframe(null_df.style.format({"% Nulos": "{:.2f}%"}).background_gradient(subset=["% Nulos"], cmap="Reds"),
+        st.dataframe(null_df.style.format({"% Nulos": "{:.2f}%"}),
                      use_container_width=True, height=350)
     with c2:
         fig = px.bar(null_df, x="% Nulos", y="Columna", orientation="h", color="% Nulos",
@@ -385,37 +385,85 @@ with tab0:
         "'Venta Invisible' en la pestaña 3."
     )
 
-    st.subheader("Decisión Ética: Eliminación vs. Imputación")
-    st.markdown("""
-Filosofía general aplicada: nunca eliminar una fila completa solo por un valor sucio en una columna, salvo que sea un
-duplicado exacto de identidad (mismo cliente/transacción reportando dos veces). Se prefiere corregir o marcar para no perder
-volumen de negocio (ingreso, unidades, clientes), dejando trazabilidad de qué fue tocado.
+    st.markdown("---")
+    st.header("🔗 Unión Estratégica: Una Sola Fuente de Verdad")
+    st.markdown(
+        "Las 3 tablas se integran en un único dataset analítico (`tv` / `tvf`) mediante `merge` tipo **left join**: "
+        "`transacciones` es la tabla base (es la única con granularidad de evento de venta), y se le añaden los atributos "
+        "de `inventario` (por `SKU_ID`) y de `feedback` (por `Transaccion_ID`). Un left join se elige deliberadamente sobre "
+        "un inner join para **no perder ninguna venta real** solo porque le falte información de catálogo o de encuesta."
+    )
 
-| Variable | Problema | Decisión | Justificación |
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Filas base (transacciones)", f"{len(t_raw):,}")
+    c2.metric("Filas tras join con inventario", f"{len(tv):,}", "0 filas perdidas")
+    c3.metric("Filas tras join con feedback", f"{len(tvf):,}", "0 filas perdidas")
+
+    st.code(
+        "tv  = transacciones.merge(inventario, on='SKU_ID', how='left')\n"
+        "tvf = tv.merge(feedback, on='Transaccion_ID', how='left')",
+        language="python",
+    )
+    st.caption(
+        "Resultado: cada fila sigue siendo una transacción; las columnas de inventario/feedback quedan en NaN cuando no hay "
+        "match (SKU fantasma o venta sin encuesta respondida), en vez de descartar la transacción."
+    )
+
+    st.subheader("⚠️ Dilema del SKU Fantasma: ¿producto nuevo o error de digitación?")
+    ghost_df = tv[~tv["En_Inventario"]]
+    matched_df = tv[tv["En_Inventario"]]
+
+    d1, d2 = st.columns(2)
+    with d1:
+        # Patrón de SKU: los códigos "fantasma" ¿tienen un rango numérico propio?
+        def sku_num(s):
+            try:
+                return int(str(s).split("-")[-1])
+            except ValueError:
+                return np.nan
+        ghost_nums = ghost_df["SKU_ID"].drop_duplicates().apply(sku_num).dropna()
+        matched_nums = inv_raw["SKU_ID"].apply(sku_num).dropna()
+        st.metric("Rango numérico SKUs en inventario", f"{int(matched_nums.min())} – {int(matched_nums.max())}")
+        st.metric("Rango numérico SKUs fantasma", f"{int(ghost_nums.min())} – {int(ghost_nums.max())}" if len(ghost_nums) else "N/A")
+    with d2:
+        fig_ghost = px.histogram(
+            pd.concat([
+                matched_nums.to_frame("SKU_Num").assign(Tipo="En inventario"),
+                ghost_nums.to_frame("SKU_Num").assign(Tipo="Fantasma"),
+            ]),
+            x="SKU_Num", color="Tipo", barmode="overlay", nbins=60,
+            title="Distribución del número de SKU: inventario vs. fantasma",
+        )
+        st.plotly_chart(fig_ghost, use_container_width=True)
+
+    st.markdown(
+        "**Decisión tomada:** los SKUs fantasma se tratan como **catálogo no registrado (productos nuevos / de terceros "
+        "no dados de alta a tiempo)**, no como error de digitación aleatorio, por dos motivos observables en los datos: "
+        "(1) sus códigos `PROD-XXXX` caen en un rango numérico **contiguo y superior** al de los SKUs sí catalogados "
+        "(no están dispersos aleatoriamente, lo que descarta un typo aislado), y (2) representan **480 SKUs distintos** "
+        "con **1,751 transacciones** — un volumen demasiado grande y sistemático para ser explicado por errores de tecleo puntuales.\n\n"
+        "**Impacto en el cálculo de margen:** al no existir `Costo_Unitario_USD` para estos SKUs, es matemáticamente "
+        "imposible calcular su margen real. La decisión es **excluirlos del margen total** (quedan como `NaN`, no como 0 "
+        "ni se les asigna un costo estimado/promedio), para no inventar rentabilidad donde no hay información de costos. "
+        "Se cuantifican aparte como **'ingreso en riesgo'** (pestaña 3) — visibles en ingreso, invisibles en rentabilidad."
+    )
+
+    st.subheader("🧮 Variables Derivadas (Feature Engineering)")
+    st.markdown("A partir de la fuente única (`tv`/`tvf`) se construyeron las siguientes métricas nuevas, usadas en las pestañas 1-5:")
+
+    st.markdown("""
+| # | Variable derivada | Fórmula | Para qué sirve |
 |---|---|---|---|
-| `feedback.Transaccion_ID` duplicado | Misma transacción con varias encuestas | Eliminar duplicados, conservar el registro más reciente (`Feedback_ID` mayor) | Es un duplicado de identidad real; mantenerlos sesgaría el NPS/rating promedio hacia clientes que respondieron más de una vez. |
-| `inventario.Stock_Actual` nulo (4.0%) | Sin lectura de stock | Imputar con mediana de la categoría | Stock no es simétrico (min -50, max 1998, con outliers negativos); la mediana no se distorsiona por esos extremos, a diferencia de la media. |
-| `inventario.Stock_Actual` negativo | Error de sistema | Corregir a 0, marcar con flag | No se elimina la fila (costo/categoría siguen siendo válidos), solo se corrige el valor imposible. |
-| `inventario.Costo_Unitario_USD` outlier ($850,000) | Error de captura o typo | Conservar sin modificar, marcar para revisión manual | Es un solo registro (n=1); no se puede confirmar si es error o producto premium real sin validar con negocio. |
-| `inventario.Lead_Time_Dias` mezclado (texto/número/nulo) | Tipos de dato inconsistentes | Convertir a numérico: rangos ("25-30 días") a promedio; "Inmediato" a 0; nulos se mantienen NaN | Imputar un tiempo de proveedor inventado podría ocultar quiebres de suministro reales. |
-| `transacciones.Costo_Envio` nulo (8.34%) | Sin registro de flete | Imputar: 0 si el envío nunca se despachó ("Perdido"), si no, mediana de esa ciudad | Distribución asimétrica por outliers de rutas largas; mediana por ciudad captura mejor el costo típico local. |
-| `transacciones.Estado_Envio` nulo (16.83%) | Sin estado registrado | Imputar con categoría explícita "Desconocido" | Usar la moda global ("Entregado") inventaría un desenlace logístico que no se puede confirmar. |
-| `transacciones.Tiempo_Entrega_Real` = 999 (50 filas) | Sentinel de envío perdido | Excluir de promedios (NaN en columna derivada), fila conservada | Es un valor centinela, no una medición real; incluirlo dispararía el tiempo promedio artificialmente. |
-| `transacciones.Cantidad_Vendida` negativa (100 filas) | Error de captura / posible devolución | Valor absoluto, marcar con flag | Preserva el volumen transaccional real; eliminar la fila perdería ingreso y contexto. |
-| `feedback.Rating_Producto` = 99 (30 filas) | Sentinel (escala real 1-5) | Convertir a NaN, no imputar | Un rating es opinión subjetiva puntual; inventar un valor falsearía la voz del cliente. |
-| `feedback.Edad_Cliente` > 100 (23 filas, máx. 195) | Dato implausible | Marcar como inválida, excluir de análisis demográfico, no eliminar la fila | El resto de columnas de esa fila siguen siendo válidas; eliminar toda la fila desperdiciaría información real de satisfacción. |
-| `feedback.Recomienda_Marca` nulo (24.87%) | No respondida | Imputar con categoría "Sin respuesta" | Forzar "Sí"/"No"/"Tal vez" inventaría una opinión que el cliente nunca dio. |
-| `feedback.Comentario_Texto` vacío / "N/A" / "---" | Ausencia de comentario libre | Unificar como "Sin comentario" | Es texto libre opcional; solo se estandariza la ausencia de dato. |
+| 1 | **Margen de Utilidad** (`Margen_Total`, `Margen_Pct`) | `(Precio_Venta_Final - Costo_Unitario_USD) * Cantidad_Vendida - Costo_Envio` ; `Margen_Total / Ingreso_Total * 100` | Detectar SKUs y canales con fuga de capital (pestaña 1) |
+| 2 | **Brecha de Entrega** (`Dias_Desde_Revision`) | `Fecha_Hoy - Ultima_Revision` (días) | Medir qué tan "a ciegas" opera cada bodega respecto a su inventario (pestaña 5) |
+| 3 | **Tasa/Ratio de Soporte** (`Tasa_Tickets`) | `mean(Ticket_Soporte_Abierto)` agrupado por Bodega/Categoría | Cuantificar el ratio de tickets de soporte por bodega y su relación con la antigüedad de revisión (pestaña 5) |
+| 4 | **Markup / Sobrecosto** (`Markup_Pct`) | `(Precio_Venta_Final - Costo_Unitario_USD) / Costo_Unitario_USD * 100` | Distinguir sobrecosto de mala calidad en el diagnóstico de fidelidad (pestaña 4) |
+| 5 | **Flag de Venta Invisible** (`En_Inventario`) | `Categoria.notna()` tras el left join | Aislar el ingreso sin control de inventario (pestaña 3) |
 """)
 
-    st.info(
-        "**Regla media/mediana/moda aplicada de forma consistente:** para variables numéricas con distribución "
-        "aproximadamente simétrica se usaría la media; en este dataset todas las variables numéricas con nulos relevantes "
-        "(Stock, Costo_Envio) presentan asimetría marcada u outliers extremos, por lo que se optó sistemáticamente por la "
-        "mediana (o mediana segmentada por grupo). Para variables categóricas con alta proporción de nulos, se evitó la moda "
-        "global cuando esta podía introducir sesgo de confirmación (p. ej. asumir que todo lo no registrado fue 'Entregado' "
-        "o 'Sí recomienda'), usando en su lugar una categoría explícita de dato faltante."
-    )
+    prev_cols = ["Transaccion_ID", "SKU_ID", "En_Inventario", "Margen_Total", "Dias_Desde_Revision"]
+    st.dataframe(tv[prev_cols].head(8), use_container_width=True)
+    st.caption("Vista previa de la fuente única con variables derivadas ya calculadas (primeras 8 filas).")
 
 # ============================================================================
 # TAB 1: FUGA DE CAPITAL Y RENTABILIDAD
