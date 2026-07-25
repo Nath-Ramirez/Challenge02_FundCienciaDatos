@@ -310,7 +310,7 @@ st.markdown("---")
 
 tab0, tab_merge, tab1, tab2, tab3, tab4, tab5, tab_groq = st.tabs([
     "🔍 EDA",
-    "🔗 Unión Estratégica",
+    "🔗 Datos analizados",
     "1️⃣ Fuga de Capital",
     "2️⃣ Crisis Logística",
     "3️⃣ Venta Invisible",
@@ -398,9 +398,6 @@ with tab0:
 # TAB MERGE: UNIÓN ESTRATÉGICA + ANTES VS DESPUÉS
 # ============================================================================
 with tab_merge:
-    st.header("🔗 Procesamiento de los datos")
-
-    st.markdown("---")
     st.header("📊 Antes vs. Después: Impacto de la Limpieza")
     st.markdown(
         "Comparación del estado **crudo** de cada dataset contra el estado **limpio** que alimenta el resto del dashboard: "
