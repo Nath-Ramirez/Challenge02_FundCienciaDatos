@@ -394,20 +394,160 @@ with tab0:
 # ============================================================================
 # TAB MERGE: UNIÓN ESTRATÉGICA
 # ============================================================================
+# ============================================================================
+# TAB MERGE: UNIÓN ESTRATÉGICA + ANTES VS DESPUÉS
+# ============================================================================
 with tab_merge:
     st.header("🔗 Unión Estratégica: Una Sola Fuente de Verdad")
     st.markdown(
         "Las 3 tablas se integran en un único dataset analítico (`tv` / `tvf`) mediante `merge` tipo **left join**: "
         "`transacciones` es la tabla base (es la única con granularidad de evento de venta), y se le añaden los atributos "
-        "de `inventario` (por `SKU_ID`) y de `feedback` (por `Transaccion_ID`)."
+        "de `inventario` (por `SKU_ID`) y de `feedback` (por `Transaccion_ID`). Un left join se elige deliberadamente sobre "
+        "un inner join para **no perder ninguna venta real** solo porque le falte información de catálogo o de encuesta."
     )
 
     t_raw = pd.read_csv(DATA_DIR / "transacciones_logistica_v2.csv")
+    inv_raw = pd.read_csv(DATA_DIR / "inventario_central_v2.csv")
+    f_raw = pd.read_csv(DATA_DIR / "feedback_clientes_v2.csv")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Filas base (transacciones)", f"{len(t_raw):,}")
     c2.metric("Filas tras join con inventario", f"{len(tv):,}", "0 filas perdidas")
     c3.metric("Filas tras join con feedback", f"{len(tvf):,}", "0 filas perdidas")
+
+    st.code(
+        "tv  = transacciones.merge(inventario, on='SKU_ID', how='left')\n"
+        "tvf = tv.merge(feedback, on='Transaccion_ID', how='left')",
+        language="python",
+    )
+    st.caption(
+        "Resultado: cada fila sigue siendo una transacción; las columnas de inventario/feedback quedan en NaN cuando no hay "
+        "match (SKU fantasma o venta sin encuesta respondida), en vez de descartar la transacción."
+    )
+
+    st.markdown("---")
+    st.header("📊 Antes vs. Después: Impacto de la Limpieza")
+    st.markdown(
+        "Comparación del estado **crudo** de cada dataset contra el estado **limpio** que alimenta el resto del dashboard: "
+        "filas eliminadas, duplicados removidos y un puntaje compuesto de salud de datos."
+    )
+
+    def health_score(df_raw, df_clean, dup_removed):
+        null_pct_raw = df_raw.isna().mean().mean() * 100
+        null_pct_clean = df_clean.isna().mean().mean() * 100
+        return null_pct_raw, null_pct_clean
+
+    datasets_ba = [
+        ("transacciones_logistica_v2.csv", t_raw, t, 0),
+        ("inventario_central_v2.csv", inv_raw, inv, 0),
+        ("feedback_clientes_v2.csv", f_raw, f, f_raw["Transaccion_ID"].duplicated().sum()),
+    ]
+
+    rows_ba = []
+    for name, raw_df, clean_df, dups in datasets_ba:
+        null_raw, null_clean = health_score(raw_df, clean_df, dups)
+        rows_ba.append({
+            "Dataset": name,
+            "Filas (antes)": len(raw_df),
+            "Filas (después)": len(clean_df),
+            "Filas eliminadas": len(raw_df) - len(clean_df),
+            "Duplicados eliminados": int(dups),
+            "% Nulidad promedio (antes)": round(null_raw, 2),
+            "% Nulidad promedio (después)": round(null_clean, 2),
+            "Salud de datos (después)": round(100 - null_clean, 1),
+        })
+    ba_df = pd.DataFrame(rows_ba)
+
+    st.dataframe(
+        ba_df.style.format({
+            "Filas (antes)": "{:,}", "Filas (después)": "{:,}", "Filas eliminadas": "{:,}",
+            "Duplicados eliminados": "{:,}",
+            "% Nulidad promedio (antes)": "{:.2f}%", "% Nulidad promedio (después)": "{:.2f}%",
+            "Salud de datos (después)": "{:.1f}%",
+        }),
+        use_container_width=True,
+    )
+
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        fig_rows = go.Figure()
+        fig_rows.add_bar(name="Antes", x=ba_df["Dataset"], y=ba_df["Filas (antes)"])
+        fig_rows.add_bar(name="Después", x=ba_df["Dataset"], y=ba_df["Filas (después)"])
+        fig_rows.update_layout(barmode="group", title="Filas: Antes vs. Después de la limpieza")
+        st.plotly_chart(fig_rows, use_container_width=True)
+    with bc2:
+        fig_health = go.Figure()
+        fig_health.add_bar(name="% Nulidad antes", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (antes)"], marker_color="#d62728")
+        fig_health.add_bar(name="% Nulidad después", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (después)"], marker_color="#2ca02c")
+        fig_health.update_layout(barmode="group", title="% Nulidad promedio: Antes vs. Después")
+        st.plotly_chart(fig_health, use_container_width=True)
+
+    st.info(
+        f"**Lectura:** el único dataset donde se eliminan filas es `feedback_clientes_v2.csv`, donde se remueven "
+        f"**{int(datasets_ba[2][3]):,} registros duplicados** (misma transacción encuestada más de una vez), pasando de "
+        f"{len(f_raw):,} a {len(f):,} filas. En `transacciones` e `inventario` **no se elimina ninguna fila** — los valores "
+        "problemáticos se corrigen, imputan o marcan (ver notas de limpieza en la barra lateral), preservando el 100% del "
+        "volumen de negocio. La nulidad promedio baja en todos los casos porque las imputaciones (mediana, categorías "
+        "explícitas de 'Desconocido'/'Sin respuesta') rellenan los huecos detectados en el EDA."
+    )
+
+    st.markdown("---")
+    st.subheader("⚠️ Dilema del SKU Fantasma: ¿producto nuevo o error de digitación?")
+    ghost_df = tv[~tv["En_Inventario"]]
+    matched_df = tv[tv["En_Inventario"]]
+
+    d1, d2 = st.columns(2)
+    with d1:
+        # Patrón de SKU: los códigos "fantasma" ¿tienen un rango numérico propio?
+        def sku_num(s):
+            try:
+                return int(str(s).split("-")[-1])
+            except ValueError:
+                return np.nan
+        ghost_nums = ghost_df["SKU_ID"].drop_duplicates().apply(sku_num).dropna()
+        matched_nums = inv_raw["SKU_ID"].apply(sku_num).dropna()
+        st.metric("Rango numérico SKUs en inventario", f"{int(matched_nums.min())} – {int(matched_nums.max())}")
+        st.metric("Rango numérico SKUs fantasma", f"{int(ghost_nums.min())} – {int(ghost_nums.max())}" if len(ghost_nums) else "N/A")
+    with d2:
+        fig_ghost = px.histogram(
+            pd.concat([
+                matched_nums.to_frame("SKU_Num").assign(Tipo="En inventario"),
+                ghost_nums.to_frame("SKU_Num").assign(Tipo="Fantasma"),
+            ]),
+            x="SKU_Num", color="Tipo", barmode="overlay", nbins=60,
+            title="Distribución del número de SKU: inventario vs. fantasma",
+        )
+        st.plotly_chart(fig_ghost, use_container_width=True)
+
+    st.markdown(
+        "**Decisión tomada:** los SKUs fantasma se tratan como **catálogo no registrado (productos nuevos / de terceros "
+        "no dados de alta a tiempo)**, no como error de digitación aleatorio, por dos motivos observables en los datos: "
+        "(1) sus códigos `PROD-XXXX` caen en un rango numérico **contiguo y superior** al de los SKUs sí catalogados "
+        "(no están dispersos aleatoriamente, lo que descarta un typo aislado), y (2) representan **480 SKUs distintos** "
+        "con **1,751 transacciones** — un volumen demasiado grande y sistemático para ser explicado por errores de tecleo puntuales.\n\n"
+        "**Impacto en el cálculo de margen:** al no existir `Costo_Unitario_USD` para estos SKUs, es matemáticamente "
+        "imposible calcular su margen real. La decisión es **excluirlos del margen total** (quedan como `NaN`, no como 0 "
+        "ni se les asigna un costo estimado/promedio), para no inventar rentabilidad donde no hay información de costos. "
+        "Se cuantifican aparte como **'ingreso en riesgo'** (pestaña 3) — visibles en ingreso, invisibles en rentabilidad."
+    )
+
+    st.subheader("🧮 Variables Derivadas (Feature Engineering)")
+    st.markdown("A partir de la fuente única (`tv`/`tvf`) se construyeron las siguientes métricas nuevas, usadas en las pestañas 1-5:")
+
+    st.markdown("""
+| # | Variable derivada | Fórmula | Para qué sirve |
+|---|---|---|---|
+| 1 | **Margen de Utilidad** (`Margen_Total`, `Margen_Pct`) | `(Precio_Venta_Final - Costo_Unitario_USD) * Cantidad_Vendida - Costo_Envio` ; `Margen_Total / Ingreso_Total * 100` | Detectar SKUs y canales con fuga de capital (pestaña 1) |
+| 2 | **Brecha de Entrega** (`Dias_Desde_Revision`) | `Fecha_Hoy - Ultima_Revision` (días) | Medir qué tan "a ciegas" opera cada bodega respecto a su inventario (pestaña 5) |
+| 3 | **Tasa/Ratio de Soporte** (`Tasa_Tickets`) | `mean(Ticket_Soporte_Abierto)` agrupado por Bodega/Categoría | Cuantificar el ratio de tickets de soporte por bodega y su relación con la antigüedad de revisión (pestaña 5) |
+| 4 | **Markup / Sobrecosto** (`Markup_Pct`) | `(Precio_Venta_Final - Costo_Unitario_USD) / Costo_Unitario_USD * 100` | Distinguir sobrecosto de mala calidad en el diagnóstico de fidelidad (pestaña 4) |
+| 5 | **Flag de Venta Invisible** (`En_Inventario`) | `Categoria.notna()` tras el left join | Aislar el ingreso sin control de inventario (pestaña 3) |
+""")
+
+    prev_cols = ["Transaccion_ID", "SKU_ID", "En_Inventario", "Margen_Total", "Dias_Desde_Revision"]
+    st.dataframe(tv[prev_cols].head(8), use_container_width=True)
+    st.caption("Vista previa de la fuente única con variables derivadas ya calculadas (primeras 8 filas).")
+
 
 # ============================================================================
 # TAB 1: FUGA DE CAPITAL
