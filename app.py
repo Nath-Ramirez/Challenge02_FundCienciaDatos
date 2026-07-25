@@ -256,8 +256,9 @@ k4.metric("% Ventas sin match en inventario", f"{pct_sin_inv:.1f}%")
 
 st.markdown("---")
 
-tab0, tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab0, tab_merge, tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 EDA",
+    "🔗 Unión Estratégica",
     "1️⃣ Fuga de Capital",
     "2️⃣ Crisis Logística",
     "3️⃣ Venta Invisible",
@@ -382,10 +383,13 @@ with tab0:
     st.caption(
         "Estas transacciones no se eliminan: se conservan para no perder ingreso ni volumen real de ventas, pero se excluyen "
         "de cualquier cálculo de margen/costo (no hay costo unitario con el cual calcularlo) y se marcan explícitamente como "
-        "'Venta Invisible' en la pestaña 3."
+        "'Venta Invisible' en la pestaña 3. El tratamiento completo de este dilema está en la pestaña **🔗 Unión Estratégica**."
     )
 
-    st.markdown("---")
+# ============================================================================
+# TAB MERGE: UNIÓN ESTRATÉGICA + ANTES VS DESPUÉS
+# ============================================================================
+with tab_merge:
     st.header("🔗 Unión Estratégica: Una Sola Fuente de Verdad")
     st.markdown(
         "Las 3 tablas se integran en un único dataset analítico (`tv` / `tvf`) mediante `merge` tipo **left join**: "
@@ -393,6 +397,10 @@ with tab0:
         "de `inventario` (por `SKU_ID`) y de `feedback` (por `Transaccion_ID`). Un left join se elige deliberadamente sobre "
         "un inner join para **no perder ninguna venta real** solo porque le falte información de catálogo o de encuesta."
     )
+
+    t_raw = pd.read_csv(DATA_DIR / "transacciones_logistica_v2.csv")
+    inv_raw = pd.read_csv(DATA_DIR / "inventario_central_v2.csv")
+    f_raw = pd.read_csv(DATA_DIR / "feedback_clientes_v2.csv")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Filas base (transacciones)", f"{len(t_raw):,}")
@@ -409,6 +417,73 @@ with tab0:
         "match (SKU fantasma o venta sin encuesta respondida), en vez de descartar la transacción."
     )
 
+    st.markdown("---")
+    st.header("📊 Antes vs. Después: Impacto de la Limpieza")
+    st.markdown(
+        "Comparación del estado **crudo** de cada dataset contra el estado **limpio** que alimenta el resto del dashboard: "
+        "filas eliminadas, duplicados removidos y un puntaje compuesto de salud de datos."
+    )
+
+    def health_score(df_raw, df_clean, dup_removed):
+        null_pct_raw = df_raw.isna().mean().mean() * 100
+        null_pct_clean = df_clean.isna().mean().mean() * 100
+        return null_pct_raw, null_pct_clean
+
+    datasets_ba = [
+        ("transacciones_logistica_v2.csv", t_raw, t, 0),
+        ("inventario_central_v2.csv", inv_raw, inv, 0),
+        ("feedback_clientes_v2.csv", f_raw, f, f_raw["Transaccion_ID"].duplicated().sum()),
+    ]
+
+    rows_ba = []
+    for name, raw_df, clean_df, dups in datasets_ba:
+        null_raw, null_clean = health_score(raw_df, clean_df, dups)
+        rows_ba.append({
+            "Dataset": name,
+            "Filas (antes)": len(raw_df),
+            "Filas (después)": len(clean_df),
+            "Filas eliminadas": len(raw_df) - len(clean_df),
+            "Duplicados eliminados": int(dups),
+            "% Nulidad promedio (antes)": round(null_raw, 2),
+            "% Nulidad promedio (después)": round(null_clean, 2),
+            "Salud de datos (después)": round(100 - null_clean, 1),
+        })
+    ba_df = pd.DataFrame(rows_ba)
+
+    st.dataframe(
+        ba_df.style.format({
+            "Filas (antes)": "{:,}", "Filas (después)": "{:,}", "Filas eliminadas": "{:,}",
+            "Duplicados eliminados": "{:,}",
+            "% Nulidad promedio (antes)": "{:.2f}%", "% Nulidad promedio (después)": "{:.2f}%",
+            "Salud de datos (después)": "{:.1f}%",
+        }),
+        use_container_width=True,
+    )
+
+    bc1, bc2 = st.columns(2)
+    with bc1:
+        fig_rows = go.Figure()
+        fig_rows.add_bar(name="Antes", x=ba_df["Dataset"], y=ba_df["Filas (antes)"])
+        fig_rows.add_bar(name="Después", x=ba_df["Dataset"], y=ba_df["Filas (después)"])
+        fig_rows.update_layout(barmode="group", title="Filas: Antes vs. Después de la limpieza")
+        st.plotly_chart(fig_rows, use_container_width=True)
+    with bc2:
+        fig_health = go.Figure()
+        fig_health.add_bar(name="% Nulidad antes", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (antes)"], marker_color="#d62728")
+        fig_health.add_bar(name="% Nulidad después", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (después)"], marker_color="#2ca02c")
+        fig_health.update_layout(barmode="group", title="% Nulidad promedio: Antes vs. Después")
+        st.plotly_chart(fig_health, use_container_width=True)
+
+    st.info(
+        f"**Lectura:** el único dataset donde se eliminan filas es `feedback_clientes_v2.csv`, donde se remueven "
+        f"**{int(datasets_ba[2][3]):,} registros duplicados** (misma transacción encuestada más de una vez), pasando de "
+        f"{len(f_raw):,} a {len(f):,} filas. En `transacciones` e `inventario` **no se elimina ninguna fila** — los valores "
+        "problemáticos se corrigen, imputan o marcan (ver notas de limpieza en la barra lateral), preservando el 100% del "
+        "volumen de negocio. La nulidad promedio baja en todos los casos porque las imputaciones (mediana, categorías "
+        "explícitas de 'Desconocido'/'Sin respuesta') rellenan los huecos detectados en el EDA."
+    )
+
+    st.markdown("---")
     st.subheader("⚠️ Dilema del SKU Fantasma: ¿producto nuevo o error de digitación?")
     ghost_df = tv[~tv["En_Inventario"]]
     matched_df = tv[tv["En_Inventario"]]
