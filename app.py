@@ -524,6 +524,54 @@ with tab4:
             labels={"Stock_Promedio": "Stock Promedio", "NPS_Promedio": "NPS Promedio"},
         )
         st.plotly_chart(fig, use_container_width=True)
+    
+        st.markdown("""
+        A partir del cruce entre el módulo de **Inventario**, **Transacciones** y **Feedback de Clientes**, se han detectado dos hallazgos críticos que comprometen tanto la retención del cliente como la salud financiera del catálogo en la categoría de **Smartphones**.
+        """)
+        
+        # Métricas destacadas
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric(
+                label="Riesgo de Percepción de Calidad",
+                value="Rating Polarizado",
+                delta="Atención en Smartphones",
+                delta_color="inverse"
+            )
+        
+        with col2:
+            st.metric(
+                label="Desviación Máxima de Margen",
+                value="> -$1,000 USD",
+                delta="Venta a Pérdida",
+                delta_color="inverse"
+            )
+        
+        st.divider()
+        
+        # Hallazgo 1: Calidad y Rating
+        st.warning("""
+        ### 1. Fricción en Fidelidad: Posible Baja Calidad en Smartphones
+        * **Observación:** El análisis del feedback vinculado a las transacciones de *Smartphones* muestra valoraciones divididas e insatisfacción recurrente.
+        * **Diagnóstico:** Los ratings bajos indican un desajuste severo entre las expectativas del cliente y el rendimiento real del dispositivo. 
+        * **Impacto:** Esta insatisfacción directa debilita la fidelidad hacia la plataforma, incrementa la tasa de devoluciones/reclamos y disminuye el *Lifetime Value* (LTV) del usuario.
+        """)
+        
+        # Hallazgo 2: Incongruencia Financiera
+        st.error("""
+        ### 2. Distorsión Financiera: Venta a Pérdida (> $1,000 USD de Brecha)
+        * **Observación:** Al comparar los precios de venta percibidos por el cliente final, estos se mantienen dentro de los rangos habituales de mercado. Sin embargo, al cruzar el precio final con la estructura de costos/inventario, el producto se comercializa a precio de pérdida.
+        * **Diagnóstico:** Existe una brecha negativa de **más de $1,000 USD por transacción** entre el costo real y el precio de venta final abonado por el cliente.
+        * **Impacto en el Negocio:** Se está **subvencionando la insatisfacción del cliente**: la empresa asume un costo operativo y de margen masivo para colocar un producto que, además, está generando opiniones negativas en la plataforma.
+        """)
+        
+        # Recomendaciones de Acción
+        st.markdown("### 📋 Recomendaciones Operativas")
+        st.markdown("""
+        1. **Auditoría de Proveedores de Smartphones:** Suspender o revisar temporalmente la comercialización de los SKU de Smartphones con ratings bajos para frenar el detrimento en la fidelidad.
+        2. **Corrección Sistemática de Precios / Costos:** Investigar la causa raíz de la brecha de $1,000 USD (¿error de catalogación, descuento no autorizado, o costo de adquisición inflado?).
+        """)
 
 # ============================================================================
 # TAB 5: RIESGO OPERATIVO
