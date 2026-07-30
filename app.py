@@ -573,6 +573,29 @@ with tab4:
         2. **Corrección Sistemática de Precios / Costos:** Investigar la causa raíz de la brecha de $1,000 USD (¿error de catalogación, descuento no autorizado, o costo de adquisición inflado?).
         """)
 
+# ============================================================================
+# TAB 5: RIESGO OPERATIVO
+# ============================================================================
+with tab5:
+    st.header("Storytelling de Riesgo Operativo")
+    st.markdown("Relación entre la **antigüedad de la última revisión de stock** y la **tasa de tickets de soporte**.")
+
+    op_df = tvf_f[tvf_f["En_Inventario"]].dropna(subset=["Dias_Desde_Revision", "Bodega_Origen"])
+    if not op_df.empty:
+        bodega_summary = op_df.groupby("Bodega_Origen").agg(
+            Dias_Desde_Revision_Prom=("Dias_Desde_Revision", "mean"),
+            Tasa_Tickets=("Ticket_Soporte_Abierto", "mean"),
+            NPS_Promedio=("Satisfaccion_NPS", "mean"),
+            Transacciones=("Transaccion_ID", "count"),
+        ).reset_index()
+        bodega_summary["Tasa_Tickets_Pct"] = bodega_summary["Tasa_Tickets"] * 100
+
+fig = px.scatter(
+            bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
+            text="Bodega_Origen", color_continuous_scale="RdYlGn",
+            title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
+        )
+        st.plotly_chart(fig, use_container_width=True)
 # =========================================================
 # SECCIÓN: STORYTELLING DEL RIESGO OPERATIVO
 # =========================================================
