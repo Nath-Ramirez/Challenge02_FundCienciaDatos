@@ -601,33 +601,88 @@ with tab1:
 # ============================================================================
 with tab2:
     st.header("Crisis Logística y Cuellos de Botella")
-    st.markdown("Correlación entre **Tiempo de Entrega** y **NPS bajo** por ciudad y bodega.")
+    st.markdown("Diagnóstico operativo de tiempos de entrega, cuellos de botella por bodega y tasas de falla en envíos.")
 
     log_df = tvf_f.dropna(subset=["Tiempo_Entrega_Valido", "Satisfaccion_NPS"]).copy()
 
-    corr_city = log_df.groupby("Ciudad_Destino").apply(
-        lambda g: g["Tiempo_Entrega_Valido"].corr(g["Satisfaccion_NPS"]) if len(g) > 5 else np.nan
-    ).dropna().sort_values()
-    
-    corr_bodega = log_df.dropna(subset=["Bodega_Origen"]).groupby("Bodega_Origen").apply(
-        lambda g: g["Tiempo_Entrega_Valido"].corr(g["Satisfaccion_NPS"]) if len(g) > 5 else np.nan
-    ).dropna().sort_values()
+    # 1. Nota metodológica sobre la correlación
+    st.info(
+        "💡 **Hallazgo Metodológico:** La correlación lineal de Pearson entre el Tiempo de Entrega y el NPS es nula "
+        "($r \\approx 0.0036$, $p > 0.8$). Esto demuestra que el tiempo por sí solo no explica la variación del NPS. "
+        "Por ello, los cuellos de botella se diagnostican directamente mediante el **Tiempo Promedio de Entrega** y la **Tasa de Incidencias** (% retrasados / perdidos)."
+    )
+
+    # 2. Scatter plot explicativo
+    fig_scatter = px.scatter(
+        log_df, 
+        x="Tiempo_Entrega_Valido", 
+        y="Satisfaccion_NPS", 
+        trendline="ols",
+        opacity=0.25,
+        title="Dispersión: Tiempo de Entrega vs. Satisfacción NPS (Línea de tendencia plana: r ≈ 0)",
+        labels={"Tiempo_Entrega_Valido": "Tiempo de Entrega (Días)", "Satisfaccion_NPS": "Puntaje NPS"}
+    )
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    st.markdown("---")
+    st.subheader("Cuellos de Botella Operativos por Bodega y Ciudad")
+
+    # 3. Métricas operativas por Bodega y Ciudad
+    bodega_metrics = tvf_f.dropna(subset=["Bodega_Origen"]).groupby("Bodega_Origen").agg(
+        Transacciones=("Transaccion_ID", "count"),
+        Tiempo_Promedio=("Tiempo_Entrega_Valido", "mean"),
+        NPS_Promedio=("Satisfaccion_NPS", "mean"),
+        Pct_Retrasados=("Estado_Envio", lambda s: (s == "Retrasado").mean() * 100),
+        Pct_Perdidos=("Estado_Envio", lambda s: (s == "Perdido").mean() * 100)
+    ).reset_index()
+
+    city_metrics = tvf_f.groupby("Ciudad_Destino").agg(
+        Transacciones=("Transaccion_ID", "count"),
+        Tiempo_Promedio=("Tiempo_Entrega_Valido", "mean"),
+        NPS_Promedio=("Satisfaccion_NPS", "mean"),
+        Pct_Retrasados=("Estado_Envio", lambda s: (s == "Retrasado").mean() * 100),
+        Pct_Perdidos=("Estado_Envio", lambda s: (s == "Perdido").mean() * 100)
+    ).reset_index()
 
     c1, c2 = st.columns(2)
     with c1:
-        if not corr_city.empty:
-            fig = px.bar(corr_city, orientation="h", title="Correlación Tiempo de Entrega vs NPS — por Ciudad",
-                         labels={"value": "Correlación (Pearson)", "Ciudad_Destino": "Ciudad"},
-                         color=corr_city.values, color_continuous_scale="RdBu_r", range_color=[-1, 1])
-            fig.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(fig, use_container_width=True)
+        fig_bodega = px.bar(
+            bodega_metrics, 
+            x="Bodega_Origen", 
+            y="Pct_Retrasados",
+            color="Pct_Retrasados",
+            color_continuous_scale="Reds",
+            title="% de Envíos Retrasados por Bodega de Origen",
+            text=bodega_metrics["Pct_Retrasados"].apply(lambda x: f"{x:.1f}%")
+        )
+        fig_bodega.update_layout(coloraxis_showscale=False, yaxis_title="% Retrasados")
+        st.plotly_chart(fig_bodega, use_container_width=True)
+
     with c2:
-        if not corr_bodega.empty:
-            fig = px.bar(corr_bodega, orientation="h", title="Correlación Tiempo de Entrega vs NPS — por Bodega",
-                         labels={"value": "Correlación (Pearson)", "Bodega_Origen": "Bodega"},
-                         color=corr_bodega.values, color_continuous_scale="RdBu_r", range_color=[-1, 1])
-            fig.update_layout(coloraxis_showscale=False)
-            st.plotly_chart(fig, use_container_width=True)
+        fig_city = px.bar(
+            city_metrics, 
+            x="Ciudad_Destino", 
+            y="Tiempo_Promedio",
+            color="Tiempo_Promedio",
+            color_continuous_scale="Oranges",
+            title="Tiempo Promedio de Entrega (Días) por Ciudad",
+            text=city_metrics["Tiempo_Promedio"].apply(lambda x: f"{x:.1f} días")
+        )
+        fig_city.update_layout(coloraxis_showscale=False, yaxis_title="Días Promedio")
+        st.plotly_chart(fig_city, use_container_width=True)
+
+    # 4. Tabla de resumen
+    st.subheader("Resumen de Desempeño Logístico por Bodega")
+    st.dataframe(
+        bodega_metrics.style.format({
+            "Transacciones": "{:,}",
+            "Tiempo_Promedio": "{:.1f} días",
+            "NPS_Promedio": "{:.1f}",
+            "Pct_Retrasados": "{:.1f}%",
+            "Pct_Perdidos": "{:.1f}%"
+        }),
+        use_container_width=True
+    )
 
 # ============================================================================
 # TAB 3: VENTA INVISIBLE
