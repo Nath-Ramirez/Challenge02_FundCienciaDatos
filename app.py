@@ -590,12 +590,12 @@ with tab5:
         ).reset_index()
         bodega_summary["Tasa_Tickets_Pct"] = bodega_summary["Tasa_Tickets"] * 100
 
-fig = px.scatter(
-            bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
-            text="Bodega_Origen", color_continuous_scale="RdYlGn",
-            title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        fig = px.scatter(
+                    bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
+                    text="Bodega_Origen", color_continuous_scale="RdYlGn",
+                    title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
+                )
+                st.plotly_chart(fig, use_container_width=True)
 # =========================================================
 # SECCIÓN: STORYTELLING DEL RIESGO OPERATIVO
 # =========================================================
