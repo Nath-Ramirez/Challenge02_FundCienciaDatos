@@ -1,6 +1,5 @@
 """
 Aplicación Principal Streamlit: Dashboard de Logística, Rentabilidad e Integración IA.
-Rediseño visual con paleta de colores pastel y mejoras UI/UX.
 """
 
 from pathlib import Path
@@ -20,103 +19,8 @@ try:
 except ImportError:
     GROQ_AVAILABLE = False
 
-# ----------------------------------------------------------------------------
-# CONFIGURACIÓN DE PÁGINA Y ESTILOS CSS (PALETA PASTEL)
-# ----------------------------------------------------------------------------
-st.set_page_config(
-    page_title="Dashboard Logístico & Rentabilidad",
-    layout="wide",
-    page_icon="📦",
-    initial_sidebar_state="expanded"
-)
-
-# Paleta de Colores Pastel Personalizada
-PASTEL_COLORS = {
-    "mint": "#B5EAD7",
-    "rose": "#FFB7B2",
-    "peach": "#FFDAC1",
-    "lavender": "#C7CEEA",
-    "yellow": "#E2F0CB",
-    "cyan": "#B2EBF2",
-    "soft_red": "#E6B0AA",
-    "soft_green": "#A9DFBF",
-    "text_dark": "#2C3E50",
-    "bg_light": "#F8F9FA",
-    "card_bg": "#FFFFFF"
-}
-
-# Inyección de CSS para estilizar métricas, sidebar, tablas y tarjetas
-st.markdown(f"""
-    <style>
-    /* Estilo general */
-    .stApp {{
-        background-color: #FAFAFD;
-    }}
-    
-    /* Titulares principales */
-    h1, h2, h3 {{
-        color: {PASTEL_COLORS['text_dark']};
-        font-weight: 600;
-    }}
-
-    /* Estilo de Tarjetas KPI */
-    div[data-testid="stMetric"] {{
-        background-color: {PASTEL_COLORS['card_bg']};
-        border: 1px solid #EAECEE;
-        padding: 16px 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }}
-    div[data-testid="stMetric"]:hover {{
-        transform: translateY(-2px);
-        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
-    }}
-    div[data-testid="stMetricLabel"] {{
-        color: #7F8C8D;
-        font-size: 0.88rem;
-        font-weight: 500;
-    }}
-    div[data-testid="stMetricValue"] {{
-        color: {PASTEL_COLORS['text_dark']};
-        font-weight: 700;
-    }}
-
-    /* Sidebar personalizado */
-    section[data-testid="stSidebar"] {{
-        background-color: #F4F6F7;
-        border-right: 1px solid #E5E7E9;
-    }}
-
-    /* Estilizado de Tabs */
-    .stTabs [data-baseweb="tab-list"] {{
-        gap: 8px;
-        background-color: transparent;
-    }}
-    .stTabs [data-baseweb="tab"] {{
-        height: 45px;
-        white-space: pre-wrap;
-        background-color: #EDF2F7;
-        border-radius: 10px 10px 0px 0px;
-        color: #4A5568;
-        font-weight: 500;
-        padding: 0px 18px;
-    }}
-    .stTabs [aria-selected="true"] {{
-        background-color: {PASTEL_COLORS['mint']} !important;
-        color: {PASTEL_COLORS['text_dark']} !important;
-        font-weight: 700;
-    }}
-
-    /* Botones principales */
-    div.stButton > button {{
-        border-radius: 8px;
-        border: none;
-        font-weight: 600;
-        transition: all 0.2s ease;
-    }}
-    </style>
-""", unsafe_allow_html=True)
+# Configuración de página
+st.set_page_config(page_title="Dashboard Logístico & Rentabilidad", layout="wide", page_icon="📦")
 
 DATA_DIR = Path(__file__).parent / "data"
 
@@ -140,27 +44,12 @@ t, inv, f, clean_summary = get_cleaned_data()
 tv, tvf = get_joined_data(t, inv, f)
 t_raw, inv_raw, f_raw = get_raw_data()
 
-# Configuración por defecto para gráficos Plotly
-def apply_pastel_theme(fig, title_text=""):
-    fig.update_layout(
-        template="plotly_white",
-        title={"text": title_text, "font": {"size": 16, "color": PASTEL_COLORS['text_dark']}},
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        margin=dict(l=20, r=20, t=50, b=20),
-        font=dict(family="sans-serif", color="#5D6D7E"),
-        xaxis=dict(gridcolor="#F2F4F4", showline=True, linecolor="#E5E7E9"),
-        yaxis=dict(gridcolor="#F2F4F4", showline=True, linecolor="#E5E7E9")
-    )
-    return fig
-
 # ----------------------------------------------------------------------------
-# SIDEBAR (FILTROS Y DESCARGA)
+# SIDEBAR (FILTROS)
 # ----------------------------------------------------------------------------
 
-st.sidebar.markdown("### 📦 Panel de Control")
-st.sidebar.markdown("<small style='color:#7F8C8D;'>Filtra los datos para explorar el negocio.</small>", unsafe_allow_html=True)
-st.sidebar.markdown("---")
+st.sidebar.title("📦 Panel de Control")
+st.sidebar.markdown("Filtra los datos para explorar el negocio.")
 
 # 1. Selector de Rango de Fechas
 min_date = t["Fecha_Venta"].min().date() if pd.notna(t["Fecha_Venta"].min()) else pd.Timestamp.today().date()
@@ -192,35 +81,28 @@ if st.sidebar.button("🔄 Refrescar Análisis", use_container_width=True):
     st.cache_data.clear()
     st.rerun()
 
-# Generación de contenido para descarga del reporte de limpieza
-report_text = f"""==================================================
-REPORTE DE LIMPIEZA Y CALIDAD DE DATOS
-==================================================
-Transacciones originales : {clean_summary['t_raw_n']:,}
-Inventario original      : {clean_summary['i_raw_n']:,}
-Feedback original        : {clean_summary['f_raw_n']:,}
-
---------------------------------------------------
-NOTAS Y HALLAZGOS DE LIMPIEZA:
---------------------------------------------------
-"""
-for idx, i_msg in enumerate(clean_summary["issues"], 1):
-    report_text += f"{idx}. {i_msg}\n"
-
-# Botón para descargar reporte de limpieza
-st.sidebar.download_button(
-    label="📄 Descargar Reporte de Limpieza",
-    data=report_text,
-    file_name="reporte_limpieza_datos.txt",
-    mime="text/plain",
-    use_container_width=True,
-    help="Haz clic para descargar el resumen de inconsistencias y correcciones aplicadas."
-)
-
 with st.sidebar.expander("🧹 Notas de limpieza de datos", expanded=False):
     st.caption(f"Transacciones originales: {clean_summary['t_raw_n']:,} | Inventario: {clean_summary['i_raw_n']:,} | Feedback: {clean_summary['f_raw_n']:,}")
     for i_msg in clean_summary["issues"]:
         st.markdown(f"- {i_msg}")
+
+# Generación del reporte de limpieza en CSV y botón de descarga en el Sidebar
+report_data = [
+    {"Tipo": "Métrica", "Detalle": f"Transacciones originales: {clean_summary.get('t_raw_n', 0)}"},
+    {"Tipo": "Métrica", "Detalle": f"Inventario original: {clean_summary.get('i_raw_n', 0)}"},
+    {"Tipo": "Métrica", "Detalle": f"Feedback original: {clean_summary.get('f_raw_n', 0)}"},
+] + [{"Tipo": "Nota de Limpieza", "Detalle": msg} for msg in clean_summary.get("issues", [])]
+
+df_reporte_limpieza = pd.DataFrame(report_data)
+csv_reporte = df_reporte_limpieza.to_csv(index=False).encode("utf-8")
+
+st.sidebar.download_button(
+    label="📥 Descargar Reporte de Limpieza (CSV)",
+    data=csv_reporte,
+    file_name="reporte_limpieza_datos.csv",
+    mime="text/csv",
+    use_container_width=True
+)
 
 st.sidebar.caption("Dashboard construido a partir de transacciones_logistica_v2, feedback_clientes_v2 e inventario_central_v2.")
 
@@ -267,20 +149,18 @@ tvf_f = tvf[mask_tvf]
 st.title("📦 Dashboard de Rentabilidad, Logística y Fidelidad")
 st.markdown("Análisis integrado de **transacciones**, **inventario** y **feedback de clientes** para diagnosticar fugas de capital, cuellos de botella logísticos y riesgos operativos.")
 
-st.markdown("<br>", unsafe_allow_html=True)
-
+k1, k2, k3, k4 = st.columns(4)
 ingreso_total = tv_f["Ingreso_Total"].sum()
 margen_total = tv_f["Margen_Total"].sum()
 n_trx = len(tv_f)
 pct_sin_inv = (~tv_f["En_Inventario"]).mean() * 100 if n_trx > 0 else 0
 
-k1, k2, k3, k4 = st.columns(4)
 k1.metric("Ingreso Total (USD)", f"${ingreso_total:,.0f}")
 k2.metric("Margen Total (USD)", f"${margen_total:,.0f}", delta=f"{margen_total/ingreso_total*100:.1f}% del ingreso" if ingreso_total else None)
 k3.metric("Transacciones", f"{n_trx:,}")
 k4.metric("% Ventas sin match en inventario", f"{pct_sin_inv:.1f}%")
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown("---")
 
 tab0, tab_merge, tab1, tab2, tab3, tab4, tab5, tab_groq = st.tabs([
     "🔍 EDA",
@@ -322,12 +202,9 @@ with tab0:
     with c1:
         st.dataframe(null_df.style.format({"% Nulos": "{:.2f}%"}), use_container_width=True, height=350)
     with c2:
-        fig = px.bar(
-            null_df, x="% Nulos", y="Columna", orientation="h", color="% Nulos",
-            color_continuous_scale=[[0, "#FCF3CF"], [0.5, "#F8C471"], [1, "#E6B0AA"]]
-        )
+        fig = px.bar(null_df, x="% Nulos", y="Columna", orientation="h", color="% Nulos",
+                     color_continuous_scale="Reds", title="% de valores nulos por columna")
         fig.update_layout(coloraxis_showscale=False, yaxis=dict(categoryorder="total ascending"))
-        apply_pastel_theme(fig, "% de valores nulos por columna")
         st.plotly_chart(fig, use_container_width=True)
 
     st.markdown(f"**Total de registros:** {len(df_sel):,} | **Total de celdas nulas:** {int(df_sel.isna().sum().sum()):,}")
@@ -396,17 +273,15 @@ with tab_merge:
     bc1, bc2 = st.columns(2)
     with bc1:
         fig_rows = go.Figure()
-        fig_rows.add_bar(name="Antes", x=ba_df["Dataset"], y=ba_df["Filas (antes)"], marker_color=PASTEL_COLORS['lavender'])
-        fig_rows.add_bar(name="Después", x=ba_df["Dataset"], y=ba_df["Filas (después)"], marker_color=PASTEL_COLORS['mint'])
-        fig_rows.update_layout(barmode="group")
-        apply_pastel_theme(fig_rows, "Filas: Antes vs. Después de la limpieza")
+        fig_rows.add_bar(name="Antes", x=ba_df["Dataset"], y=ba_df["Filas (antes)"])
+        fig_rows.add_bar(name="Después", x=ba_df["Dataset"], y=ba_df["Filas (después)"])
+        fig_rows.update_layout(barmode="group", title="Filas: Antes vs. Después de la limpieza")
         st.plotly_chart(fig_rows, use_container_width=True)
     with bc2:
         fig_health = go.Figure()
-        fig_health.add_bar(name="% Nulidad antes", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (antes)"], marker_color=PASTEL_COLORS['rose'])
-        fig_health.add_bar(name="% Nulidad después", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (después)"], marker_color=PASTEL_COLORS['mint'])
-        fig_health.update_layout(barmode="group")
-        apply_pastel_theme(fig_health, "% Nulidad promedio: Antes vs. Después")
+        fig_health.add_bar(name="% Nulidad antes", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (antes)"], marker_color="#d62728")
+        fig_health.add_bar(name="% Nulidad después", x=ba_df["Dataset"], y=ba_df["% Nulidad promedio (después)"], marker_color="#2ca02c")
+        fig_health.update_layout(barmode="group", title="% Nulidad promedio: Antes vs. Después")
         st.plotly_chart(fig_health, use_container_width=True)
 
     st.info(
@@ -440,9 +315,8 @@ with tab_merge:
                 ghost_nums.to_frame("SKU_Num").assign(Tipo="Fantasma"),
             ]),
             x="SKU_Num", color="Tipo", barmode="overlay", nbins=60,
-            color_discrete_sequence=[PASTEL_COLORS['mint'], PASTEL_COLORS['rose']]
+            title="Distribución del número de SKU: inventario vs. fantasma",
         )
-        apply_pastel_theme(fig_ghost, "Distribución del número de SKU: inventario vs. fantasma")
         st.plotly_chart(fig_ghost, use_container_width=True)
 
     st.markdown(
@@ -510,12 +384,11 @@ with tab1:
     
     fig_channel = px.bar(
         channel_analysis, y="Canal_Venta", x="Margen", orientation="h", 
+        title="Margen Total por Canal de Venta",
         text=channel_analysis["Margen_Pct"].apply(lambda x: f"{x:.1f}% del ingreso"),
-        color="Margen",
-        color_continuous_scale=[[0, "#E6B0AA"], [0.5, "#FCF3CF"], [1, "#A9DFBF"]]
+        color="Margen", color_continuous_scale="RdYlGn"
     )
     fig_channel.update_layout(coloraxis_showscale=False, xaxis_title="Margen Total (USD)", yaxis_title="Canal de Venta")
-    apply_pastel_theme(fig_channel, "Margen Total por Canal de Venta")
     st.plotly_chart(fig_channel, use_container_width=True)
 
     st.markdown("---")
@@ -547,11 +420,10 @@ with tab2:
     )
 
     fig_scatter = px.scatter(
-        log_df, x="Tiempo_Entrega_Valido", y="Satisfaccion_NPS", trendline="ols", opacity=0.35,
-        labels={"Tiempo_Entrega_Valido": "Tiempo de Entrega (Días)", "Satisfaccion_NPS": "Puntaje NPS"},
-        color_discrete_sequence=[PASTEL_COLORS['lavender']]
+        log_df, x="Tiempo_Entrega_Valido", y="Satisfaccion_NPS", trendline="ols", opacity=0.25,
+        title="Dispersión: Tiempo de Entrega vs. Satisfacción NPS (Línea de tendencia plana: r ≈ 0)",
+        labels={"Tiempo_Entrega_Valido": "Tiempo de Entrega (Días)", "Satisfaccion_NPS": "Puntaje NPS"}
     )
-    apply_pastel_theme(fig_scatter, "Dispersión: Tiempo de Entrega vs. Satisfacción NPS (Línea de tendencia plana: r ≈ 0)")
     st.plotly_chart(fig_scatter, use_container_width=True)
 
     st.markdown("---")
@@ -577,21 +449,19 @@ with tab2:
     with c1:
         fig_bodega = px.bar(
             bodega_metrics, x="Bodega_Origen", y="Pct_Retrasados", color="Pct_Retrasados",
-            color_continuous_scale=[[0, "#FADBD8"], [1, "#CD6155"]],
+            color_continuous_scale="Reds", title="% de Envíos Retrasados por Bodega de Origen",
             text=bodega_metrics["Pct_Retrasados"].apply(lambda x: f"{x:.1f}%")
         )
         fig_bodega.update_layout(coloraxis_showscale=False, yaxis_title="% Retrasados")
-        apply_pastel_theme(fig_bodega, "% de Envíos Retrasados por Bodega de Origen")
         st.plotly_chart(fig_bodega, use_container_width=True)
 
     with c2:
         fig_city = px.bar(
             city_metrics, x="Ciudad_Destino", y="Tiempo_Promedio", color="Tiempo_Promedio",
-            color_continuous_scale=[[0, "#FDEBD0"], [1, "#E59866"]],
+            color_continuous_scale="Oranges", title="Tiempo Promedio de Entrega (Días) por Ciudad",
             text=city_metrics["Tiempo_Promedio"].apply(lambda x: f"{x:.1f} días")
         )
         fig_city.update_layout(coloraxis_showscale=False, yaxis_title="Días Promedio")
-        apply_pastel_theme(fig_city, "Tiempo Promedio de Entrega (Días) por Ciudad")
         st.plotly_chart(fig_city, use_container_width=True)
 
     st.subheader("Resumen de Desempeño Logístico por Bodega")
@@ -623,9 +493,9 @@ with tab3:
     fig = px.pie(
         values=[ingreso_invisible, max(0, ingreso_total_f - ingreso_invisible)],
         names=["Sin match en inventario", "Con match en inventario"],
-        color_discrete_sequence=[PASTEL_COLORS['rose'], PASTEL_COLORS['mint']], hole=0.45,
+        title="Ingreso Total: Ventas Controladas vs. Venta Invisible",
+        color_discrete_sequence=["#d62728", "#2ca02c"], hole=0.45,
     )
-    apply_pastel_theme(fig, "Ingreso Total: Ventas Controladas vs. Venta Invisible")
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
@@ -649,10 +519,10 @@ with tab4:
 
         fig = px.scatter(
             cat_summary, x="Stock_Promedio", y="NPS_Promedio", size="Transacciones", color="Markup_Pct",
-            text="Categoria", color_continuous_scale=[[0, "#E6B0AA"], [0.5, "#FCF3CF"], [1, "#A9DFBF"]],
+            text="Categoria", color_continuous_scale="RdYlGn_r",
+            title="Stock promedio vs NPS promedio por Categoría",
             labels={"Stock_Promedio": "Stock Promedio", "NPS_Promedio": "NPS Promedio"},
         )
-        apply_pastel_theme(fig, "Stock promedio vs NPS promedio por Categoría")
         st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
@@ -674,9 +544,9 @@ with tab5:
 
         fig = px.scatter(
             bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
-            text="Bodega_Origen", color_continuous_scale=[[0, "#E6B0AA"], [0.5, "#FCF3CF"], [1, "#A9DFBF"]],
+            text="Bodega_Origen", color_continuous_scale="RdYlGn",
+            title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
         )
-        apply_pastel_theme(fig, "Antigüedad de revisión vs. Tasa de Tickets por Bodega")
         st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
