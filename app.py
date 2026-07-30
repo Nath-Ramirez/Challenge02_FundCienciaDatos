@@ -595,7 +595,7 @@ with tab5:
                     text="Bodega_Origen", color_continuous_scale="RdYlGn",
                     title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
                 )
-                st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 # =========================================================
 # SECCIÓN: STORYTELLING DEL RIESGO OPERATIVO
 # =========================================================
