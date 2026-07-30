@@ -576,105 +576,79 @@ with tab4:
 # =========================================================
 # SECCIÓN: STORYTELLING DEL RIESGO OPERATIVO
 # =========================================================
+st.header("📦 Storytelling del Riesgo Operativo: Operación a Ciegas y Satisfacción Final")
 
-with tab5:
-    st.header("📦 Storytelling del Riesgo Operativo: Operación a Ciegas y Satisfacción Final")
-    st.markdown("Relación entre la **antigüedad de la última revisión de stock** y la **tasa de tickets de soporte**.")
+st.markdown("""
+El **Riesgo Operativo** surge cuando el control físico de los inventarios se descuida.
+Al cruzar los **Días Sin Revisión**, la **Tasa de Tickets de Soporte** y la **Satisfacción del Cliente (NPS)**, 
+revelamos qué bodegas operan a ciegas y cómo esto impacta la experiencia final del usuario.
+""")
 
-    op_df = tvf_f[tvf_f["En_Inventario"]].dropna(subset=["Dias_Desde_Revision", "Bodega_Origen"])
-    if not op_df.empty:
-        bodega_summary = op_df.groupby("Bodega_Origen").agg(
-            Dias_Desde_Revision_Prom=("Dias_Desde_Revision", "mean"),
-            Tasa_Tickets=("Ticket_Soporte_Abierto", "mean"),
-            NPS_Promedio=("Satisfaccion_NPS", "mean"),
-            Transacciones=("Transaccion_ID", "count"),
-        ).reset_index()
-        bodega_summary["Tasa_Tickets_Pct"] = bodega_summary["Tasa_Tickets"] * 100
+# Tarjetas resumidas de KPIs
+col1, col2, col3 = st.columns(3)
 
-        fig = px.scatter(
-            bodega_summary, x="Dias_Desde_Revision_Prom", y="Tasa_Tickets_Pct", size="Transacciones", color="NPS_Promedio",
-            text="Bodega_Origen", color_continuous_scale="RdYlGn",
-            title="Antigüedad de revisión vs. Tasa de Tickets por Bodega",
-        )
-        st.plotly_chart(fig, use_container_width=True)
+with col1:
+    st.metric(
+        label="Bodegas en Riesgo Crítico",
+        value="3 Bodegas",
+        delta="Occidente, Zona Franca, Norte",
+        delta_color="inverse"
+    )
 
-    st.markdown("""
-    El **Riesgo Operativo** se manifiesta de forma directa cuando el control de inventarios se descuida.
-    A través del análisis de **Días Sin Revisión**, **Tasa de Tickets de Soporte** y **Satisfacción del Cliente (NPS)**, 
-    identificamos qué bodegas están **operando a ciegas** y de qué manera esta falta de auditoría impacta la percepción del usuario final.
-    """)
-    
-    # Tarjetas resumidas de KPIs
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric(
-            label="Bodegas en Riesgo Crítico",
-            value="3 Bodegas",
-            delta="Occidente, Zona Franca, Norte",
-            delta_color="inverse"
-        )
-    
-    with col2:
-        st.metric(
-            label="Efecto en Satisfacción",
-            value="Colapso de NPS",
-            delta="Alta tasa de tickets",
-            delta_color="inverse"
-        )
-    
-    with col3:
-        st.metric(
-            label="Caso de Mitigación",
-            value="BOD-EXP-99",
-            delta="Alta satisfacción / Buen soporte",
-            delta_color="normal"
-        )
-    
-    st.divider()
-    
-    # --- DIAGNÓSTICO DETALLADO ---
-    
-    st.subheader("📊 Análisis Causal: ¿Cómo afecta el descontrol operativo al cliente?")
-    
-    # 1. El Trío Crítico
-    st.error("""
-    ### 🚨 1. El Trío en Red Zona: Occidente, Zona Franca y Norte
-    * **Diagnóstico Operativo:** Estas 3 bodegas combinan un acumulado extremo de **días sin revisión de inventario** con la **tasa de tickets de soporte más alta** de la red.
-    * **Impacto en Satisfacción:** La falta de auditoría física periódica se traduce directamente en stock fantasma, despachos erróneos o productos defectuosos que no se filtran a tiempo. Esto provoca la caída más severa del NPS en toda la operación.
-    * **Conclusión:** Aquí la ceguera operativa destruye la experiencia del usuario. La acumulación de días sin revisión actúa como la causa raíz de la insatisfacción masiva.
-    """)
-    
-    # 2. Casos Atípicos / Anómalos
-    st.warning("""
-    ### ⚠️ 2. La Brecha de Control y Gestión: BOD-EXT-99 vs. BOD-EXP-99
-    
-    * **BOD-EXT-99 (Riesgo Latente acumulado):**
-      * Presenta una cantidad considerable de días sin revisión y un volumen de tickets elevado (aunque ligeramente inferior al trío crítico).
-      * Demuestra que el descuido en la auditoría sigue alimentando incidencias de manera proporcional.
-    
-    * **BOD-EXP-99 (El Efecto Compensación de Soporte):**
-      * **La Anomalía:** A pesar de registrar una alta cifra de días sin revisión de inventario, mantiene un **nivel de satisfacción final óptimo**.
-      * **Causa Raíz:** Esta bodega compensa su "ceguera de inventario" con un **excelente manejo de atención al cliente y resolución de tickets**. Los problemas ocurren en bodega, pero el equipo de soporte los resuelve tan rápido y eficazmente que la percepción del cliente final no se ve resentida.
-    """)
-    
-    # 3. La Regla General del Riesgo
-    st.info("""
-    ### 💡 3. Conclusión del Storytelling: ¿Días sin revisión = Mala satisfacción?
-    
-    Los **días sin revisión** representan la **vulnerabilidad interna**, mientras que la **tasa de tickets** es el síntoma de que el error ya llegó al cliente:
-    
-    1. **Descontrol + Mal Soporte (Occidente, Zona Franca, Norte):** La falla de inventario impacta de lleno al cliente. Pérdida total de fidelidad.
-    2. **Descontrol + Buen Soporte (BOD-EXP-99):** La falla existe y genera sobrecostos de atención, pero la gestión rápida "salva" la satisfacción final del usuario.
-    """)
-    
-    # --- RECOMENDACIONES DE ACCIÓN ---
-    st.markdown("### 🛠️ Plan de Mitigación del Riesgo Operativo")
-    st.markdown("""
-    1. **Auditorías de Emergencia:** Intervenir de inmediato las bodegas **Occidente, Zona Franca y Norte** con conteos cíclicos obligatorios para reducir la ventana de días sin revisión a menos de 7 días.
-    2. **Estandarizar Protocolos de Soporte:** Replicar el modelo de gestión de incidencias de **BOD-EXP-99** en las bodegas críticas para contener el impacto en NPS mientras se corrigen los procesos de inventario.
-    """)
+with col2:
+    st.metric(
+        label="Efecto en Satisfacción",
+        value="Colapso de NPS",
+        delta="Alta tasa de tickets",
+        delta_color="inverse"
+    )
 
+with col3:
+    st.metric(
+        label="Caso de Mitigación",
+        value="BOD-EXT-99",
+        delta="Soporte mitiga descontrol",
+        delta_color="normal"
+    )
+
+st.divider()
+
+# --- DIAGNÓSTICO DETALLADO ---
+
+st.subheader("📊 Análisis Causal: ¿Cómo afectan los días sin revisión al cliente?")
+
+# 1. El Trío Crítico
+st.error("""
+### 🚨 1. El Trío en Red Zona: Occidente, Zona Franca y Norte
+* **Diagnóstico Operativo:** Estas 3 bodegas registran una combinación crítica de **acumulación extrema de días sin revisión** y las **tasas de tickets de soporte más altas** del sistema.
+* **Impacto en Satisfacción:** La falta de auditoría física genera errores recurrentes (productos defectuosos, stock fantasma o despachos erróneos) que llegan directamente al cliente, destruyendo la satisfacción y desplomando el NPS.
+* **Conclusión:** La ceguera operativa en esta zona no tiene filtro previo; cada falla en bodega se traduce en un reclamo y un cliente insatisfecho.
+""")
+
+# 2. Caso Particular BOD-EXT-99
+st.warning("""
+### ⚠️ 2. El Caso Singular de BOD-EXT-99: La Red de Carga en Soporte
+* **Diagnóstico Operativo:** Muestra un volumen alto de días sin revisión y genera una cantidad considerable de tickets de soporte (aunque no tan masiva como el trío crítico).
+* **El Comportamiento de la Satisfacción:** A pesar del descontrol en revisiones, la satisfacción no colapsa al nivel catastrófico de las bodegas críticas.
+* **Causa Raíz:** Esta bodega evidencia que un **buen manejo y resolución de tickets de soporte** logra amortiguar el impacto. Las fallas físicas en bodega existen, pero el área de atención al cliente resuelve las incidencias a tiempo para evitar que la percepción del cliente final se destruya por completo.
+""")
+
+# 3. La Regla General del Riesgo
+st.info("""
+### 💡 3. Conclusión: ¿Días sin revisión = Mala satisfacción?
+
+Los **días sin revisión** representan el **descontrol interno**, mientras que los **tickets** son los síntomas visibles ante el cliente:
+
+1. **Descontrol + Soporte Ineficiente (Occidente, Zona Franca, Norte):** La falla operativa destruye la fidelidad del cliente de forma inmediata.
+2. **Descontrol + Soporte Ágil (BOD-EXT-99):** El descontrol genera sobrecostos operativos por reclamos, pero la gestión rápida de tickets actúa como escudo para proteger el NPS.
+""")
+
+# --- RECOMENDACIONES DE ACCIÓN ---
+st.markdown("### 🛠️ Plan de Mitigación del Riesgo Operativo")
+st.markdown("""
+1. **Auditorías de Emergencia:** Intervenir de inmediato **Occidente, Zona Franca y Norte** con conteos cíclicos semanales para erradicar la causa raíz del volumen de tickets.
+2. **Control Preventivo en BOD-EXT-99:** Realizar auditoría de inventario en **BOD-EXT-99** antes de que el volumen de incidencias supere la capacidad del equipo de soporte para contener la insatisfacción.
+""")
 # ============================================================================
 # TAB GROQ: INTEGRACIÓN IA (LLAMA-3)
 # ============================================================================
