@@ -530,6 +530,7 @@ with tab1:
 
     matched = tv_f[tv_f["En_Inventario"]].copy()
 
+    # 1. Cálculo general de márgenes a nivel SKU
     sku_margin = matched.groupby("SKU_ID").agg(
         Categoria=("Categoria", "first"),
         Unidades_Vendidas=("Cantidad_Vendida", "sum"),
@@ -538,22 +539,57 @@ with tab1:
     ).reset_index()
     sku_margin["Margen_Pct"] = np.where(sku_margin["Ingreso_Total"] > 0, sku_margin["Margen_Total"] / sku_margin["Ingreso_Total"] * 100, 0)
 
+    # Segmentación rentables vs pérdida
     neg_skus = sku_margin[sku_margin["Margen_Total"] < 0].sort_values("Margen_Total")
+    pos_skus = sku_margin[sku_margin["Margen_Total"] >= 0]
+    
+    margen_neto = sku_margin["Margen_Total"].sum()
+    perdida_neg = neg_skus["Margen_Total"].sum()
+    ganancia_pos = pos_skus["Margen_Total"].sum()
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.metric("SKUs con margen negativo", f"{len(neg_skus):,} / {len(sku_margin):,}")
-        st.metric("Pérdida total acumulada (USD)", f"${neg_skus['Margen_Total'].sum():,.0f}")
-    with c2:
-        by_channel = matched[matched["SKU_ID"].isin(neg_skus["SKU_ID"])].groupby("Canal_Venta")["Margen_Total"].sum().sort_values()
-        if not by_channel.empty:
-            fig = px.bar(by_channel, orientation="h", title="Pérdida por canal (SKUs con margen negativo)",
-                         labels={"value": "Margen Total (USD)", "Canal_Venta": "Canal"}, color=by_channel.values,
-                         color_continuous_scale="Reds_r")
-            fig.update_layout(showlegend=False, coloraxis_showscale=False)
-            st.plotly_chart(fig, use_container_width=True)
+    # 2. Nuevas Métricas con Contexto Completo
+    c1, c2, c3 = st.columns(3)
+    c1.metric("SKUs en Pérdida (Margen < 0)", f"{len(neg_skus):,}", f"Acumulan: ${perdida_neg:,.0f} USD", delta_color="inverse")
+    c2.metric("SKUs Rentables (Margen ≥ 0)", f"{len(pos_skus):,}", f"Acumulan: ${ganancia_pos:,.0f} USD", delta_color="normal")
+    c3.metric("Margen Neto Real", f"${margen_neto:,.0f} USD", "Balance de SKUs controlados", delta_color="off")
 
-    st.subheader("Top SKUs con mayor pérdida")
+    st.markdown("---")
+    
+    # 3. Análisis de Fallo Sistémico por Canal
+    st.subheader("Desglose por Canal: ¿Es una falla crítica del canal Online?")
+    st.markdown("Los datos revelan que la falla de precios es estructural en los canales digitales. Aunque **Online** genera grandes pérdidas, el estado más crítico corresponde a la **App**.")
+    
+    channel_analysis = matched.groupby("Canal_Venta").agg(
+        Ingreso=("Ingreso_Total", "sum"),
+        Margen=("Margen_Total", "sum")
+    ).reset_index()
+    channel_analysis["Margen_Pct"] = np.where(channel_analysis["Ingreso"] > 0, channel_analysis["Margen"] / channel_analysis["Ingreso"] * 100, 0)
+    channel_analysis = channel_analysis.sort_values("Margen")
+    
+    fig_channel = px.bar(
+        channel_analysis, 
+        y="Canal_Venta", 
+        x="Margen", 
+        orientation="h", 
+        title="Margen Total por Canal de Venta",
+        text=channel_analysis["Margen_Pct"].apply(lambda x: f"{x:.1f}% del ingreso"),
+        color="Margen", 
+        color_continuous_scale="RdYlGn"
+    )
+    fig_channel.update_layout(coloraxis_showscale=False, xaxis_title="Margen Total (USD)", yaxis_title="Canal de Venta")
+    st.plotly_chart(fig_channel, use_container_width=True)
+
+    # 4. Alerta de SKUs Fantasma (Ingreso sin control)
+    st.markdown("---")
+    invisible = tv_f[~tv_f["En_Inventario"]]
+    st.warning(
+        f"🚨 **Riesgo Adicional (SKUs Fantasma):** Existen **{invisible['SKU_ID'].nunique():,} SKUs** sin registro de costos en el inventario que generaron "
+        f"**${invisible['Ingreso_Total'].sum():,.0f} USD** en ingresos. Dado que es matemáticamente imposible calcular su margen sin conocer el costo, "
+        f"estos no se incluyen en el margen neto de arriba, lo que representa una fuga de capital y riesgo operativo sin medir."
+    )
+
+    # 5. Top SKUs en pérdida (Tabla original mantenida)
+    st.subheader("Top SKUs con mayor pérdida individual")
     st.dataframe(
         neg_skus.head(20)[["SKU_ID", "Categoria", "Unidades_Vendidas", "Ingreso_Total", "Margen_Total", "Margen_Pct"]]
         .style.format({"Ingreso_Total": "${:,.0f}", "Margen_Total": "${:,.0f}", "Margen_Pct": "{:.1f}%"}),
