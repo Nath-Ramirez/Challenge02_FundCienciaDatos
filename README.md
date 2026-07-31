@@ -1,6 +1,6 @@
 # Dashboard Logístico, Rentabilidad y Fidelidad de Clientes
 
-[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://tu-app-en-la-nube.streamlit.app)
+[![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://challenge02fundcienciadatos-mubkenlfj3zzayqtetft2t.streamlit.app/)
 
 Tablero de control interactivo desarrollado en Streamlit y Plotly para el diagnóstico operativo, financiero y de fidelidad de clientes. Integra análisis de calidad de datos, detección de fuga de capital, evaluación de cuellos de botella logísticos y un módulo de síntesis automatizada mediante Llama-3 (Groq API).
 
