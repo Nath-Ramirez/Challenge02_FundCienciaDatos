@@ -1,13 +1,3 @@
-# Intentar importar cliente de Groq e inicializarlo con el Secret
-try:
-    from groq import Groq
-    GROQ_AVAILABLE = True
-except ImportError:
-    GROQ_AVAILABLE = False
-
-# Lectura de la API Key desde los Secrets de Streamlit
-GROQ_API_KEY = st.secrets.get("groq_api_key", None)
-
 """
 Aplicación Principal Streamlit: Dashboard de Logística, Rentabilidad e Integración IA.
 """
@@ -21,6 +11,16 @@ import plotly.graph_objects as go
 
 # Importación de funciones modularizadas de limpieza y carga de datos
 from data_cleaner import load_raw_data, load_and_clean, build_joins, detect_iqr_outliers
+
+# Intentar importar cliente de Groq e inicializarlo con el Secret
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+# Lectura de la API Key desde los Secrets de Streamlit
+GROQ_API_KEY = st.secrets.get("groq_api_key", None)
 
 # Intentar importar cliente de Groq
 try:
