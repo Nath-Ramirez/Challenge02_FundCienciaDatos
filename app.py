@@ -1,3 +1,13 @@
+# Intentar importar cliente de Groq e inicializarlo con el Secret
+try:
+    from groq import Groq
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+
+# Lectura de la API Key desde los Secrets de Streamlit
+GROQ_API_KEY = st.secrets.get("groq_api_key", None)
+
 """
 Aplicación Principal Streamlit: Dashboard de Logística, Rentabilidad e Integración IA.
 """
@@ -673,67 +683,54 @@ with tab5:
     2. **Control Preventivo en BOD-EXT-99:** Realizar auditoría de inventario en **BOD-EXT-99** antes de que el volumen de incidencias supere la capacidad del equipo de soporte para contener la insatisfacción.
     """)
 # ============================================================================
-# TAB GROQ: INTEGRACIÓN IA (LLAMA-3)
+# TAB GROQ: DIAGNÓSTICO IA
 # ============================================================================
 with tab_groq:
-    st.header("🤖 Análisis Automatizado con Llama-3 (Groq API)")
-    st.markdown("Generación de un **informe ejecutivo y diagnóstico cualitativo** basado exclusivamente en las métricas filtradas.")
+    st.header("🤖 Diagnóstico IA (Groq)")
+    st.markdown("Genera diagnósticos automáticos y recomendaciones operativas usando Inteligencia Artificial.")
 
     if not GROQ_AVAILABLE:
-        st.error("La librería `groq` no está instalada. Ejecuta `pip install groq` en tu entorno.")
+        st.error("🚨 La librería `groq` no está instalada. Ejecuta `pip install groq` en tu entorno.")
+    elif not GROQ_API_KEY:
+        st.warning(
+            "⚠️ No se encontró la API Key en los secretos de Streamlit. "
+            "Asegúrate de haber creado el secret `groq_api_key` en tu archivo `.streamlit/secrets.toml` "
+            "o en la configuración de Streamlit Cloud."
+        )
     else:
-        groq_api_key = st.text_input("Ingresa tu Groq API Key:", type="password", help="Tu API key no será guardada permanentemente.")
+        # Instanciar cliente con la clave del Secret
+        client = Groq(api_key=GROQ_API_KEY)
 
-        neg_skus_count = len(sku_margin[sku_margin["Margen_Total"] < 0]) if 'sku_margin' in locals() else 0
-        total_loss = sku_margin[sku_margin["Margen_Total"] < 0]["Margen_Total"].sum() if 'sku_margin' in locals() else 0
-        
-        prompt_context = f"""
-        Eres un consultor experto en cadena de suministro, finanzas y operaciones.
-        Analiza el siguiente resumen ejecutivo generado a partir de los datos filtrados por el usuario:
+        st.success("✅ Conexión con Groq configurada exitosamente desde Secrets.")
 
-        --- RESUMEN DE MÉTRICAS FILTRADAS ---
-        * Rango de fechas: {start_d} a {end_d}
-        * Categorías analizadas: {', '.join(categorias) if len(categorias) <= 5 else f'{len(categorias)} categorías'}
-        * Bodegas analizadas: {', '.join(bodegas) if len(bodegas) <= 5 else f'{len(bodegas)} bodegas'}
-        * Canales seleccionados: {', '.join(canales)}
-        * Ciudades seleccionadas: {', '.join(ciudades)}
-        
-        --- INDICADORES CLAVE DE RENDIMIENTO (KPIs) ---
-        1. Ingreso Total: ${ingreso_total:,.2f} USD
-        2. Margen Total: ${margen_total:,.2f} USD ({(margen_total/ingreso_total*100) if ingreso_total else 0:.1f}% del ingreso)
-        3. Número de Transacciones: {n_trx:,}
-        4. Venta Invisible (% sin registro en catálogo): {pct_riesgo:.1f}% (Equivalente a ${ingreso_invisible:,.2f} USD)
-        5. Fuga de Capital: {neg_skus_count} SKUs generan margen negativo con un total acumulado de pérdidas de ${total_loss:,.2f} USD.
-
-        INSTRUCCIONES:
-        Por favor provee un informe ejecutivo detallado dividido en tres partes:
-        1. **Diagnóstico general**: Evaluación de la salud financiera y operativa bajo los filtros seleccionados.
-        2. **Alertas críticas**: Fugas de capital, problemas con la Venta Invisible y fallas de stock o tiempos logísticos.
-        3. **Plan de Acción Relevante**: 3 recomendaciones prioritarias con pasos concretos para mitigar pérdidas e incrementar el NPS.
-        """
-
-        if st.button("🚀 Disparar Análisis de Llama-3", type="primary"):
-            if not groq_api_key:
-                st.warning("Por favor ingresa tu clave API de Groq para continuar.")
-            else:
+        # Botón para generar el informe con IA
+        if st.button("🚀 Generar Diagnóstico Automático con IA", use_container_width=True):
+            with st.spinner("Analizando KPIs y métricas con Groq..."):
                 try:
-                    with st.spinner("Analizando métricas y generando diagnóstico con Llama-3..."):
-                        client = Groq(api_key=groq_api_key)
-                        completion = client.chat.completions.create(
-                            model="llama-3.3-70b-versatile",
-                            messages=[
-                                {"role": "system", "content": "Eres un asistente analítico corporativo especializado en logística y finanzas."},
-                                {"role": "user", "content": prompt_context}
-                            ],
-                            temperature=0.3,
-                            max_tokens=1500,
-                        )
-                        respuesta = completion.choices[0].message.content
-                        st.success("Análisis completado exitosamente.")
-                        st.markdown("---")
-                        st.markdown(respuesta)
+                    # Resumen de contexto para el prompt del LLM
+                    prompt_contexto = f"""
+                    Eres un consultor experto en logística, inventarios y análisis financiero.
+                    Analiza los siguientes KPIs del negocio y genera un diagnóstico estratégico conciso con recomendaciones:
+
+                    - Ingreso Total: ${ingreso_total:,.0f} USD
+                    - Margen Total: ${margen_total:,.0f} USD
+                    - Transacciones Totales: {n_trx:,}
+                    - % Ventas sin match en inventario: {pct_sin_inv:.1f}%
+                    """
+
+                    response = client.chat.completions.create(
+                        messages=[
+                            {"role": "system", "content": "Eres un asistente analítico experto en cadena de suministro y finanzas."},
+                            {"role": "user", "content": prompt_contexto}
+                        ],
+                        model="llama-3.3-70b-versatile",
+                    )
+
+                    st.subheader("💡 Resultado del Análisis")
+                    st.write(response.choices[0].message.content)
+
                 except Exception as e:
-                    st.error(f"Error al conectar con la API de Groq: {e}")
+                    st.error(f"Error al llamar a la API de Groq: {e}")
 
 st.markdown("---")
 st.caption("Dashboard generado con Streamlit + Plotly. Todos los valores monetarios en USD.")
